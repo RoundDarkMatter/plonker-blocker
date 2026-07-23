@@ -6,6 +6,8 @@ modifying the apps themselves. Open a protected app and a full-screen lock cover
 it until someone authenticates. Guess wrong and it plays an "Ah ah ah! You didn't
 say the magic word!" animation.
 
+Runs on **macOS 11 Big Sur through macOS 26 Tahoe** (universal arm64 + x86_64).
+
 > The project *folder* is still named `AdminGate/` for git history's sake, but
 > every binary, bundle, and support path now uses the **PlonkerBlocker** name, and
 > everything you see — Dock, menu bar, windows — says **Plonker Blocker**.
@@ -56,8 +58,24 @@ protected apps open normally.
 
 Every lock, unlock (with method), failed attempt, and protection-off event is
 appended to `~/Library/Application Support/PlonkerBlocker/attempts.jsonl`. View it
-in **Activity…** (or `--log`). The guard also posts local notifications when an
-app is locked and after repeated failed attempts.
+in **Activity…** (or `--log`). The guard also posts local (Notification Center)
+alerts when an app is locked and after a failed attempt.
+
+### External alerts (Telegram / webhook) — off by default
+
+In **Notifications…** you can forward events to your phone. Configure a **Telegram**
+bot (token from @BotFather + your chat ID) and/or a generic **webhook URL** (receives
+a JSON `POST`), then choose which events fire an alert: app locked, app unlocked, a
+wrong password, or protection turned off. A **Send Test** button verifies the setup.
+Everything is off until you enable it; the bot token is stored only in your local
+`prefs.json` and messages go directly to Telegram / your webhook — nowhere else.
+
+## Startup & priority
+
+The guard is a per-user LaunchAgent (`RunAtLoad`, `KeepAlive`, `ProcessType:
+Interactive`) that runs at interactive QoS. At launch it warms the policy cache and
+**pre-builds** the (hidden) lock windows, so the first lock appears with no build
+latency and a protected app that is already frontmost is covered immediately.
 
 ## Menu-bar item, background & login
 
@@ -69,9 +87,11 @@ Protection** (admin required).
 ## The "Ah ah ah!" animation & sound
 
 The built-in wagging-finger animation is drawn natively (crisp on any display; no
-GIF compression artifacts); a sound plays on a wrong passcode. Both can be toggled
-independently under **Lock Screen** in the app menu (both on by default). To use
-your own animation and/or sound instead, drop files at:
+GIF compression artifacts). The animation is **on** by default; the wrong-passcode
+sound is **off** by default. Toggle each under **Lock Screen** in the app menu.
+
+Pick your own via **Lock Screen → Choose Animation… / Choose Sound…** (the running
+guard swaps them on the next lock — no restart). Or drop files directly at:
 
 ```
 ~/Library/Application Support/PlonkerBlocker/ahahah.gif
@@ -79,8 +99,8 @@ your own animation and/or sound instead, drop files at:
 ```
 
 Without a custom sound it falls back to the system "Funk" beep. Custom media is
-loaded from the user's support folder only — it is never bundled into the app,
-the repo, or the installers (keep any borrowed audio for personal use).
+loaded from your machine only — it is never bundled into the app, the repo, or the
+installers (keep any borrowed audio for personal use).
 
 ## Use it
 
@@ -109,11 +129,14 @@ commands require an admin account.)
 ./build.sh                     # -> "Plonker Blocker.app"
 tools/run_tests.sh             # compile + run the logic tests (schedule, passcode, codable…)
 swift tools/make_icon.swift    # re-rasterize src/AppIcon.svg -> src/AppIcon.icns
+swift tools/make_tray.swift    # regenerate src/TrayIcon.pdf (menu-bar glyph) from its vector spec
 ```
 
-Artwork: `src/AppIcon.svg` (color mark) is the app icon; `src/TrayIcon.svg`
-(monochrome, template-tinted) is the menu-bar icon — swap either SVG and rebuild
-(`make_icon` first for the app icon) to re-skin.
+Artwork: `src/AppIcon.svg` (color mark) is the app icon; `src/TrayIcon.pdf`
+(vector, template-tinted) is the menu-bar icon. The tray glyph ships as a **PDF**
+because `NSImage` decodes standalone SVG files only on macOS 14+, whereas PDF
+templates render across the whole 11–26 range; `src/TrayIcon.svg` remains the
+design source and `tools/make_tray.swift` mirrors it into the PDF.
 
 ## Installer
 

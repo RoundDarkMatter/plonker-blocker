@@ -11,8 +11,10 @@ compile_universal() {
     local out="$1"; shift
     local arm="$out.arm64" x86="$out.x86_64"
     local fw="-framework Cocoa -framework Security -framework LocalAuthentication -framework UserNotifications"
-    swiftc -O -target arm64-apple-macos12.0 -o "$arm" "$@" $fw
-    if swiftc -O -target x86_64-apple-macos12.0 -o "$x86" "$@" $fw 2>/dev/null; then
+    # macOS 11 (Big Sur) … macOS 26 (Tahoe). arm64 Macs debuted on Big Sur, so
+    # arm64-macos11.0 is the earliest sensible floor for both slices.
+    swiftc -O -target arm64-apple-macos11.0 -o "$arm" "$@" $fw
+    if swiftc -O -target x86_64-apple-macos11.0 -o "$x86" "$@" $fw 2>/dev/null; then
         lipo -create -output "$out" "$arm" "$x86"; rm -f "$arm" "$x86"
     else
         echo "    (x86_64 slice unavailable — $out is arm64-only)"; mv "$arm" "$out"
@@ -42,7 +44,7 @@ GUARDAPP="$CONTENTS/Library/LoginItems/PlonkerBlockerGuard.app"
 mkdir -p "$GUARDAPP/Contents/MacOS" "$GUARDAPP/Contents/Resources"
 cp build/PlonkerBlockerGuard "$GUARDAPP/Contents/MacOS/PlonkerBlockerGuard"
 cp src/GuardInfo.plist "$GUARDAPP/Contents/Info.plist"
-[ -f src/TrayIcon.svg ] && cp src/TrayIcon.svg "$GUARDAPP/Contents/Resources/TrayIcon.svg"
+[ -f src/TrayIcon.pdf ] && cp src/TrayIcon.pdf "$GUARDAPP/Contents/Resources/TrayIcon.pdf"
 chmod +x "$GUARDAPP/Contents/MacOS/PlonkerBlockerGuard"
 
 echo "==> Ad-hoc signing"

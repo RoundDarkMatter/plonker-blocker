@@ -114,6 +114,38 @@ func testAttemptCodable() {
     check(back.app == "Foo" && back.bundleID == "com.x.foo", "attempt app+bundle survive")
 }
 
+func testNotifyPrefs() {
+    section("Notification prefs + gating")
+    let d = Prefs.default
+    check(!d.notifyEnabled, "external alerts off by default")
+    check(!d.notifyOnLocked, "locked alert off by default (noisy)")
+    check(d.notifyOnUnlocked && d.notifyOnFailed && d.notifyOnProtectionOff,
+          "unlocked/failed/protection-off alerts on by default")
+    check(d.animationPath == nil && d.soundPath == nil, "no custom media by default")
+
+    check(RemoteEvent.protectionOff.rawValue == "protection_off", "protectionOff maps to the log event name")
+
+    var p = Prefs.default
+    p.notifyOnLocked = true; p.notifyOnUnlocked = false
+    check(RemoteEvent.locked.enabled(in: p), "locked event honors its flag when on")
+    check(!RemoteEvent.unlocked.enabled(in: p), "unlocked event honors its flag when off")
+
+    // New fields survive a JSON round-trip and old files still decode.
+    var full = Prefs.default
+    full.notifyEnabled = true; full.telegramBotToken = "tok"; full.telegramChatID = "42"
+    full.animationPath = "/a.gif"; full.soundPath = "/s.mp3"
+    let back = try! JSONDecoder().decode(Prefs.self, from: try! JSONEncoder().encode(full))
+    check(back.notifyEnabled && back.telegramBotToken == "tok" && back.telegramChatID == "42",
+          "telegram config round-trips")
+    check(back.animationPath == "/a.gif" && back.soundPath == "/s.mp3", "custom media paths round-trip")
+
+    // A pre-notifications prefs.json (only the old keys) still decodes with new defaults.
+    let old = #"{"backgroundTheme":"graphite","soundEnabled":true,"ahahahEnabled":true}"#
+    let legacy = try! JSONDecoder().decode(Prefs.self, from: Data(old.utf8))
+    check(legacy.backgroundTheme == "graphite" && legacy.soundEnabled && !legacy.notifyEnabled,
+          "legacy prefs decode; new notify fields default off")
+}
+
 @main
 enum TestMain {
     static func main() {
@@ -123,6 +155,7 @@ enum TestMain {
         testCodableBackCompat()
         testAppPolicy()
         testAttemptCodable()
+        testNotifyPrefs()
         print("\n\(passed) passed, \(failed) failed")
         exit(failed == 0 ? 0 : 1)
     }

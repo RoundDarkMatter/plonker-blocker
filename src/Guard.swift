@@ -22,9 +22,9 @@ final class CoverController {
     private var windows: [NSWindow] = []
     private var nameLabels: [NSTextField] = []
     private var iconViews: [NSImageView] = []
-    private var nedryViews: [NSView] = []          // "Ah ah ah!" labels/gif to reveal
+    private var nedryNativeViews: [NSView] = []    // native "Ah ah ah!" labels + finger
     private var nedryHideViews: [NSView] = []      // card elements hidden while it shows
-    private var nedryGifViews: [NSImageView] = []  // only when the user supplied a gif
+    private var nedryGifViews: [NSImageView] = []  // shown instead when a custom animation is set
     private var fingerViews: [NSTextField] = []    // native wagging finger
     private var bgViews: [BackgroundView] = []
     private var builtFrames: [CGRect] = []
@@ -43,17 +43,29 @@ final class CoverController {
     var onTouchID: (() -> Void)?
     var onSystemUnlock: (() -> Void)?
 
-    // A user-supplied ahahah.gif takes precedence over the native animation.
-    private lazy var overrideGif: NSImage? =
-        NSImage(contentsOf: Paths.userSupport.appendingPathComponent("ahahah.gif"))
+    // Custom animation resolution (cached by path). A configured animationPath
+    // (or a legacy ahahah.gif drop-in) replaces the native wagging finger.
+    private var animCachePath = "\u{1}"   // sentinel ≠ any real path so first call computes
+    private var animCacheImage: NSImage?
+    private func currentAnimation(_ prefs: Prefs) -> NSImage? {
+        var path = prefs.animationPath ?? ""
+        if path.isEmpty {
+            let legacy = Paths.userSupport.appendingPathComponent("ahahah.gif").path
+            if FileManager.default.fileExists(atPath: legacy) { path = legacy }
+        }
+        if path != animCachePath {
+            animCachePath = path
+            animCacheImage = path.isEmpty ? nil : NSImage(contentsOfFile: path)
+        }
+        return animCacheImage
+    }
 
     /// `passcode` = show the inline passcode field; otherwise a button that
     /// triggers the system admin dialog. `biometrics` toggles the Touch ID button.
-    func show(appName: String, icon: NSImage?, passcode: Bool, biometrics: Bool) {
+    func show(appName: String, icon: NSImage?, passcode: Bool, biometrics: Bool, prefs: Prefs) {
         rebuildIfGeometryChanged()
         if windows.isEmpty { build() }
         passcodeMode = passcode
-        let prefs = PrefsStore.load()
         for v in bgViews { v.apply(prefs) }   // match the user's chosen theme
         for label in nameLabels { label.stringValue = appName }
         for iv in iconViews { iv.image = icon }
@@ -70,28 +82,43 @@ final class CoverController {
         touchIDButton?.isHidden = !biometrics       // fingerprint offered on any lock
         unlockButton?.title = passcode ? "Unlock" : "Unlock…"
 
+        // Show the cover unconditionally (security), then take activation. On
+        // macOS 14+ forcible activation was replaced by a cooperative model: name
+        // the app we're stealing focus from so the guard's borderless window can
+        // become key and receive passcode keystrokes without a first click.
         for w in windows { w.orderFrontRegardless() }
-        NSApp.activate(ignoringOtherApps: true)
+        if #available(macOS 14.0, *) {
+            if let front = NSWorkspace.shared.frontmostApplication, front != .current {
+                NSRunningApplication.current.activate(from: front, options: [])
+            } else {
+                NSApp.activate()
+            }
+        } else {
+            NSApp.activate(ignoringOtherApps: true)   // 11–13: original behavior
+        }
         windows.first?.makeKeyAndOrderFront(nil)
         if passcode, let f = passcodeField { f.window?.makeFirstResponder(f) }
         visible = true
     }
 
     // On a wrong attempt — "Ah ah ah! You didn't say the magic word!"
-    // The animation is drawn on the card's own surface: we hide the icon/name/
-    // subtitle and reveal the finger + text in their place, so there's no separate
-    // panel and therefore no edge/seam over the background glow.
-    func showNedry() {
+    // The native animation draws on the card's own surface (no separate panel →
+    // no seam). If the user configured a custom animation it replaces the native
+    // finger/text instead.
+    func showNedry(_ prefs: Prefs) {
         for v in nedryHideViews { v.isHidden = true }
-        for v in nedryViews { v.isHidden = false }
-        for g in nedryGifViews { g.animates = true }
+        let anim = currentAnimation(prefs)
+        let useGif = anim != nil
+        for g in nedryGifViews { g.image = anim; g.isHidden = !useGif; g.animates = useGif }
+        for v in nedryNativeViews { v.isHidden = useGif }
         adminHintLabel?.isHidden = passcodeMode   // admin-password hint only in admin mode
-        startWag()
+        if useGif { for f in fingerViews { f.layer?.removeAnimation(forKey: "wag") } }
+        else { startWag() }
     }
 
     private func hideNedry() {
-        for v in nedryViews { v.isHidden = true }
-        for g in nedryGifViews { g.animates = false }
+        for v in nedryNativeViews { v.isHidden = true }
+        for g in nedryGifViews { g.animates = false; g.isHidden = true }
         for f in fingerViews { f.layer?.removeAnimation(forKey: "wag") }
         adminHintLabel?.isHidden = true
         for v in nedryHideViews { v.isHidden = false }
@@ -137,6 +164,13 @@ final class CoverController {
         visible = false
     }
 
+    /// Pre-create the (hidden) cover windows so the very first lock has zero build
+    /// latency. Windows stay ordered-out until `show(…)` brings them forward.
+    func prebuild() {
+        rebuildIfGeometryChanged()
+        if windows.isEmpty { build() }
+    }
+
     /// Re-lay the cover to the current screens if a display was added/removed OR
     /// any display's frame changed (resolution, rotation, rearrangement).
     func rebuildIfGeometryChanged() {
@@ -144,7 +178,7 @@ final class CoverController {
         if current != builtFrames {
             for w in windows { w.orderOut(nil) }
             windows.removeAll(); nameLabels.removeAll(); iconViews.removeAll()
-            nedryViews.removeAll(); nedryHideViews.removeAll()
+            nedryNativeViews.removeAll(); nedryHideViews.removeAll()
             nedryGifViews.removeAll(); fingerViews.removeAll()
             bgViews.removeAll()
         }
@@ -256,44 +290,41 @@ final class CoverController {
         _ = label("or press ⌘⇥ to switch to another app",
                   .systemFont(ofSize: 11), NSColor(white: 0.42, alpha: 1), 36, 16)
 
-        // "Ah ah ah!" animation. Drawn directly on the card (no separate panel →
-        // no edge/seam over the background glow); it replaces the hidden icon/name/
-        // subtitle above. A user-supplied ahahah.gif takes precedence.
-        if let img = overrideGif {
-            let gif = NSImageView(frame: NSRect(x: 20, y: 208, width: cardW - 40, height: cardH - 236))
-            gif.imageScaling = .scaleProportionallyDown
-            gif.image = img
-            gif.animates = false
-            gif.isHidden = true
-            gif.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
-            card.addSubview(gif)
-            nedryGifViews.append(gif); nedryViews.append(gif)
-        } else {
-            let ahLbl = label("Ah ah ah!", .boldSystemFont(ofSize: 30), .white, cardH - 68, 36)
-            ahLbl.isHidden = true; nedryViews.append(ahLbl)
-            let finger = NSTextField(labelWithString: "☝️")
-            finger.font = .systemFont(ofSize: 84)
-            finger.alignment = .center
-            finger.frame = NSRect(x: (cardW - 120)/2, y: 250, width: 120, height: 96)
-            finger.wantsLayer = true
-            finger.isHidden = true
-            card.addSubview(finger)
-            fingerViews.append(finger); nedryViews.append(finger)
-            let wordLbl = label("You didn't say the magic word", .systemFont(ofSize: 14),
-                                NSColor(white: 0.7, alpha: 1), 210, 20)
-            wordLbl.isHidden = true; nedryViews.append(wordLbl)
+        // "Ah ah ah!" animation. The native version draws directly on the card (no
+        // separate panel → no seam over the glow), replacing the hidden icon/name/
+        // subtitle. A configured custom animation replaces it (built at show time).
+        let ahLbl = label("Ah ah ah!", .boldSystemFont(ofSize: 30), .white, cardH - 68, 36)
+        ahLbl.isHidden = true; nedryNativeViews.append(ahLbl)
+        let finger = NSTextField(labelWithString: "☝️")
+        finger.font = .systemFont(ofSize: 84)
+        finger.alignment = .center
+        finger.frame = NSRect(x: (cardW - 120)/2, y: 250, width: 120, height: 96)
+        finger.wantsLayer = true
+        finger.isHidden = true
+        card.addSubview(finger)
+        fingerViews.append(finger); nedryNativeViews.append(finger)
+        let wordLbl = label("You didn't say the magic word", .systemFont(ofSize: 14),
+                            NSColor(white: 0.7, alpha: 1), 210, 20)
+        wordLbl.isHidden = true; nedryNativeViews.append(wordLbl)
 
-            // Smaller admin instruction, under the magic-word line (admin mode only —
-            // in passcode mode the field occupies this space).
-            let hint = NSTextField(wrappingLabelWithString:
-                "Please put the computer administrator password or contact your network administrator.")
-            hint.font = .systemFont(ofSize: 11); hint.textColor = NSColor(white: 0.5, alpha: 1)
-            hint.alignment = .center; hint.isSelectable = false; hint.drawsBackground = false
-            hint.isBezeled = false; hint.maximumNumberOfLines = 2
-            hint.frame = NSRect(x: 30, y: 168, width: cardW - 60, height: 34)
-            hint.isHidden = true
-            card.addSubview(hint); adminHintLabel = hint
-        }
+        // Custom-animation image view (populated + revealed only when configured).
+        let gif = NSImageView(frame: NSRect(x: 20, y: 206, width: cardW - 40, height: cardH - 222))
+        gif.imageScaling = .scaleProportionallyDown
+        gif.animates = false
+        gif.isHidden = true
+        gif.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        card.addSubview(gif); nedryGifViews.append(gif)
+
+        // Smaller admin instruction, under the magic-word line (admin mode only —
+        // in passcode mode the field occupies this space).
+        let hint = NSTextField(wrappingLabelWithString:
+            "Please put the computer administrator password or contact your network administrator.")
+        hint.font = .systemFont(ofSize: 11); hint.textColor = NSColor(white: 0.5, alpha: 1)
+        hint.alignment = .center; hint.isSelectable = false; hint.drawsBackground = false
+        hint.isBezeled = false; hint.maximumNumberOfLines = 2
+        hint.frame = NSRect(x: 30, y: 168, width: cardW - 60, height: 34)
+        hint.isHidden = true
+        card.addSubview(hint); adminHintLabel = hint
 
         bg.addSubview(card)
         return bg
@@ -322,19 +353,31 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var authWatchdog: DispatchWorkItem?
 
-    // Wrong-attempt sound: prefer the user's own clip (ahahah.mp3/m4a/aiff/wav in
-    // the support folder), falling back to the system "Funk" beep.
-    private lazy var nedrySound: NSSound? = {
-        for ext in ["mp3", "m4a", "aiff", "wav"] {
-            let url = Paths.userSupport.appendingPathComponent("ahahah.\(ext)")
-            if let s = NSSound(contentsOf: url, byReference: true) { return s }
+    // Wrong-attempt sound. Resolved from prefs.soundPath, then a legacy drop-in
+    // (ahahah.mp3/m4a/aiff/wav), then the system "Funk" beep. Cached by path so a
+    // changed setting is picked up without a restart.
+    private var soundCachePath = "\u{1}"
+    private var soundCache: NSSound?
+    private func nedrySound(_ prefs: Prefs) -> NSSound? {
+        var path = prefs.soundPath ?? ""
+        if path.isEmpty {
+            for ext in ["mp3", "m4a", "aiff", "wav"] {
+                let p = Paths.userSupport.appendingPathComponent("ahahah.\(ext)").path
+                if FileManager.default.fileExists(atPath: p) { path = p; break }
+            }
         }
-        return NSSound(named: NSSound.Name("Funk"))
-    }()
+        if path != soundCachePath {
+            soundCachePath = path
+            soundCache = path.isEmpty ? NSSound(named: NSSound.Name("Funk"))
+                                      : NSSound(contentsOfFile: path, byReference: true)
+        }
+        return soundCache
+    }
 
-    private func playNedrySound() {
-        nedrySound?.stop()   // restart from the top on rapid retries
-        nedrySound?.play()
+    private func playNedrySound(_ prefs: Prefs) {
+        let s = nedrySound(prefs)
+        s?.stop()   // restart from the top on rapid retries
+        s?.play()
     }
 
     // Cached policy (re-read only when the file's mtime changes) + fail-closed copy.
@@ -351,10 +394,15 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Scheduling priority comes from the LaunchAgent plist ("ProcessType":
+        // "Interactive", see GuardAgent.enable), and the AppKit main thread already
+        // runs at userInteractive QoS — so no code-side priority bump is needed.
         cover.onSubmitPasscode = { [weak self] pass in self?.tryPasscode(pass) }
         cover.onTouchID = { [weak self] in self?.tryTouchID() }
         cover.onSystemUnlock = { [weak self] in self?.retrySystemUnlock() }
-        Notifier.requestAuth()
+
+        // Register the frontmost-app observer FIRST and check immediately, so a
+        // protected app that is already up is covered with no perceptible gap.
         let wc = NSWorkspace.shared.notificationCenter
         wc.addObserver(self, selector: #selector(appActivated(_:)),
                        name: NSWorkspace.didActivateApplicationNotification, object: nil)
@@ -362,13 +410,19 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                        name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         wc.addObserver(self, selector: #selector(appTerminated(_:)),
                        name: NSWorkspace.didTerminateApplicationNotification, object: nil)
-        // Re-lay / re-assert the cover when displays change while it is up.
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        setupStatusItem()
-        // Cover a protected app that is already frontmost at startup.
+
+        _ = policy()                 // warm the policy cache off the first-lock path
+        cover.prebuild()             // build the (hidden) cover windows now → instant first lock
         evaluate(NSWorkspace.shared.frontmostApplication)
+
+        // Non-urgent startup work, deferred so it can't delay the first cover.
+        DispatchQueue.main.async { [weak self] in
+            self?.setupStatusItem()
+            Notifier.requestAuth()
+        }
     }
 
     // Unlocked and not yet expired?
@@ -403,8 +457,13 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func screensChanged() {
         cover.rebuildIfGeometryChanged()
         if coveredPID != nil, let app = currentApp {
+            let hasPass = policy().passcode != nil
             cover.show(appName: app.localizedName ?? "This app", icon: app.icon,
-                       passcode: policy().passcode != nil, biometrics: biometricsAvailable())
+                       passcode: hasPass, biometrics: biometricsAvailable(), prefs: PrefsStore.load())
+            // Re-showing re-enables the field, so re-assert an active lockout.
+            if hasPass, lockedOut() {
+                cover.setLockout(true, message: "Wrong passcode — wait a moment. Touch ID still works.")
+            }
         }
     }
 
@@ -434,11 +493,13 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             coveredPID = app.processIdentifier
             currentApp = app
             let appName = app.localizedName ?? bid
-            AttemptLog.append(app: appName, bundleID: bid, event: "locked")
-            Notifier.notify(title: "🔒 \(appName) is locked", body: "Plonker Blocker is protecting it.")
             let hasPass = p.passcode != nil
+
+            // Paint the cover FIRST — logging (disk) and notifications must never
+            // gate the user-visible lock. Load prefs once and reuse it.
+            let prefs = PrefsStore.load()
             cover.show(appName: appName, icon: app.icon,
-                       passcode: hasPass, biometrics: biometricsAvailable())
+                       passcode: hasPass, biometrics: biometricsAvailable(), prefs: prefs)
             if hasPass {
                 // Passcode field is focused; the user can type or tap Touch ID.
                 // Re-assert any active brute-force lockout across cover re-shows.
@@ -446,14 +507,26 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             // No passcode set → don't auto-prompt; the user clicks "Unlock…" to
             // bring up the system admin dialog (via onSystemUnlock → attemptUnlock).
+
+            AttemptLog.append(app: appName, bundleID: bid, event: "locked")
+            Notifier.notify(title: "🔒 \(appName) is locked", body: "Plonker Blocker is protecting it.")
+            RemoteNotify.send(.locked, title: "\(appName) is locked",
+                              body: "Someone brought a protected app forward.", prefs: prefs)
         } else {
             scheduleHide()
         }
     }
 
+    // Cached (short TTL) so rapid re-shows / screen changes don't each pay the
+    // canEvaluatePolicy hardware query. Invalidated after a biometric failure,
+    // which can flip availability (e.g. biometry lockout).
+    private var bioCache: (value: Bool, at: Date)?
     private func biometricsAvailable() -> Bool {
+        if let c = bioCache, Date().timeIntervalSince(c.at) < 3 { return c.value }
         var err: NSError?
-        return LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
+        let v = LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
+        bioCache = (v, Date())
+        return v
     }
 
     private func succeedUnlock(method: String) {
@@ -464,8 +537,9 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Duration comes from the app's "Unlock for" setting. 0 = never re-lock.
         let minutes = policy().relockMinutes
         unlockUntil[pid] = minutes <= 0 ? .distantFuture : Date().addingTimeInterval(Double(minutes) * 60)
-        AttemptLog.append(app: app.localizedName ?? (app.bundleIdentifier ?? "app"),
-                          bundleID: app.bundleIdentifier ?? "", event: "unlocked", method: method)
+        let name = app.localizedName ?? (app.bundleIdentifier ?? "app")
+        AttemptLog.append(app: name, bundleID: app.bundleIdentifier ?? "", event: "unlocked", method: method)
+        RemoteNotify.send(.unlocked, title: "\(name) unlocked", body: "Unlocked via \(method).")
         hideCover()
         app.activate()
     }
@@ -488,14 +562,17 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // blocks online brute force outright. Touch ID stays available.
         passFailStreak += 1
         let prefs = PrefsStore.load()
+        let appName = currentApp?.localizedName ?? "a locked app"
         AttemptLog.append(app: currentApp?.localizedName ?? "app",
                           bundleID: currentApp?.bundleIdentifier ?? "", event: "failed", method: "passcode")
         cover.rejectPasscode()
-        if prefs.ahahahEnabled { cover.showNedry() }
-        if prefs.soundEnabled { playNedrySound() }
+        if prefs.ahahahEnabled { cover.showNedry(prefs) }
+        if prefs.soundEnabled { playNedrySound(prefs) }
         if passFailStreak == 1 {
             Notifier.notify(title: "⚠️ Failed unlock attempt",
-                            body: "Someone is trying to open “\(currentApp?.localizedName ?? "a locked app")”.")
+                            body: "Someone is trying to open “\(appName)”.")
+            RemoteNotify.send(.failed, title: "Failed unlock attempt",
+                              body: "Wrong passcode entered for “\(appName)”.", prefs: prefs)
         }
         let backoff = min(60.0, 5.0 * pow(2.0, Double(passFailStreak - 1)))
         lockoutUntil = Date().addingTimeInterval(backoff)
@@ -523,7 +600,9 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.succeedUnlock(method: "touchid")
                 } else {
                     // Cancel/failed biometric → keep the cover; the passcode field
-                    // is available. Re-check frontmost for stranded-cover safety.
+                    // is available. A failure can flip biometry availability, so
+                    // drop the cache. Re-check frontmost for stranded-cover safety.
+                    self.bioCache = nil
                     self.evaluate(NSWorkspace.shared.frontmostApplication)
                 }
             }
@@ -578,13 +657,15 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         if outcome == .failed {
                             AttemptLog.append(app: name, bundleID: app.bundleIdentifier ?? "",
                                               event: "failed", method: "admin")
+                            RemoteNotify.send(.failed, title: "Failed unlock attempt",
+                                              body: "Wrong administrator password entered for “\(name)”.")
                         }
                         // A wrong password (the dialog enforced its own 3 tries) fires
                         // "Ah ah ah!" immediately; repeated cancels fire it after 3.
                         let prefs = PrefsStore.load()
                         if prefs.ahahahEnabled, outcome == .failed || (self.failCounts[pid] ?? 0) >= 3 {
-                            self.cover.showNedry()
-                            if prefs.soundEnabled { self.playNedrySound() }
+                            self.cover.showNedry(prefs)
+                            if prefs.soundEnabled { self.playNedrySound(prefs) }
                         }
                     }
                     // Re-check the real frontmost so a stranded cover is lowered.
@@ -603,9 +684,10 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            // Custom tray mark (the derpy prohibition face), shipped as a vector
-            // SVG so it stays crisp on any display; template = auto light/dark tint.
-            if let url = Bundle.main.url(forResource: "TrayIcon", withExtension: "svg"),
+            // Custom tray mark (the derpy prohibition face) as a vector PDF template
+            // — NSImage loads PDF on every macOS 11–26 (standalone SVG only decodes
+            // on 14+). template = auto light/dark menu-bar tint.
+            if let url = Bundle.main.url(forResource: "TrayIcon", withExtension: "pdf"),
                let img = NSImage(contentsOf: url) {
                 img.size = NSSize(width: 18, height: 18)
                 img.isTemplate = true
@@ -673,6 +755,10 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             prompt: "Turn off Plonker Blocker protection?\n\n"
                   + "Enter an administrator name and password to continue.") else { return }
         AttemptLog.append(app: "Plonker Blocker", bundleID: "", event: "protection_off")
+        // Blocking: we terminate right after, so a fire-and-forget POST wouldn't
+        // leave the machine. Bounded wait so a dead network can't hang the quit.
+        RemoteNotify.sendBlocking(.protectionOff, title: "Protection turned off",
+                                  body: "Plonker Blocker protection was disabled on this Mac.")
         GuardAgent.disableFromGuard()
         NSApp.terminate(nil)
     }

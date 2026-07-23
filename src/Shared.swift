@@ -72,25 +72,52 @@ struct Policy: Codable {
     }
 }
 
-// Cosmetic preferences (NOT security). User-owned.
+// Cosmetic + convenience preferences (NOT security). User-owned.
+// All properties have defaults, so the compiler-synthesized Codable fills any
+// missing key with its default — old prefs.json files decode forward-compatibly.
 struct Prefs: Codable {
-    var backgroundTheme: String?
-    var backgroundImagePath: String?
-    var ahahahEnabled: Bool
-    var soundEnabled: Bool
-    static let `default` = Prefs(backgroundTheme: nil, backgroundImagePath: nil,
-                                 ahahahEnabled: true, soundEnabled: false)
+    var backgroundTheme: String? = nil
+    var backgroundImagePath: String? = nil
+    var ahahahEnabled: Bool = true
+    var soundEnabled: Bool = false
+    var animationPath: String? = nil     // custom lock-screen animation (gif/image); nil = built-in
+    var soundPath: String? = nil         // custom wrong-attempt sound; nil = system "Funk"
 
-    init(backgroundTheme: String?, backgroundImagePath: String?, ahahahEnabled: Bool, soundEnabled: Bool) {
-        self.backgroundTheme = backgroundTheme; self.backgroundImagePath = backgroundImagePath
-        self.ahahahEnabled = ahahahEnabled; self.soundEnabled = soundEnabled
-    }
-    init(from d: Decoder) throws {
-        let c = try d.container(keyedBy: CodingKeys.self)
-        backgroundTheme = try c.decodeIfPresent(String.self, forKey: .backgroundTheme)
-        backgroundImagePath = try c.decodeIfPresent(String.self, forKey: .backgroundImagePath)
-        ahahahEnabled = try c.decodeIfPresent(Bool.self, forKey: .ahahahEnabled) ?? true
-        soundEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundEnabled) ?? false
+    // External alerts (Telegram / generic webhook). Off by default.
+    var notifyEnabled: Bool = false
+    var telegramBotToken: String? = nil
+    var telegramChatID: String? = nil
+    var webhookURL: String? = nil
+    var notifyOnLocked: Bool = false
+    var notifyOnUnlocked: Bool = true
+    var notifyOnFailed: Bool = true
+    var notifyOnProtectionOff: Bool = true
+
+    static let `default` = Prefs()
+}
+
+// Lenient decoder in an extension (keeps the synthesized memberwise init): any key
+// missing from an older prefs.json falls back to the property's default.
+extension Prefs {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        func s(_ k: CodingKeys) -> String? { (try? c.decodeIfPresent(String.self, forKey: k)) ?? nil }
+        func b(_ k: CodingKeys, _ dflt: Bool) -> Bool { ((try? c.decodeIfPresent(Bool.self, forKey: k)) ?? nil) ?? dflt }
+        backgroundTheme = s(.backgroundTheme)
+        backgroundImagePath = s(.backgroundImagePath)
+        ahahahEnabled = b(.ahahahEnabled, true)
+        soundEnabled = b(.soundEnabled, false)
+        animationPath = s(.animationPath)
+        soundPath = s(.soundPath)
+        notifyEnabled = b(.notifyEnabled, false)
+        telegramBotToken = s(.telegramBotToken)
+        telegramChatID = s(.telegramChatID)
+        webhookURL = s(.webhookURL)
+        notifyOnLocked = b(.notifyOnLocked, false)
+        notifyOnUnlocked = b(.notifyOnUnlocked, true)
+        notifyOnFailed = b(.notifyOnFailed, true)
+        notifyOnProtectionOff = b(.notifyOnProtectionOff, true)
     }
 }
 
@@ -356,6 +383,107 @@ enum Notifier {
         let c = UNMutableNotificationContent(); c.title = title; c.body = body
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    }
+}
+
+// MARK: - External alerts (Telegram / webhook) — user-configured, off by default
+
+enum RemoteEvent: String {
+    case locked, unlocked, failed, protectionOff = "protection_off"
+    // Whether the user has opted this event in.
+    func enabled(in p: Prefs) -> Bool {
+        switch self {
+        case .locked: return p.notifyOnLocked
+        case .unlocked: return p.notifyOnUnlocked
+        case .failed: return p.notifyOnFailed
+        case .protectionOff: return p.notifyOnProtectionOff
+        }
+    }
+}
+
+enum RemoteNotify {
+    private static func clean(_ s: String?) -> String? {
+        let t = s?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return t.isEmpty ? nil : t
+    }
+
+    private static func telegramRequest(_ text: String, _ p: Prefs) -> URLRequest? {
+        guard let token = clean(p.telegramBotToken), let chat = clean(p.telegramChatID),
+              let url = URL(string: "https://api.telegram.org/bot\(token)/sendMessage") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["chat_id": chat, "text": text])
+        return req
+    }
+
+    private static func webhookRequest(_ payload: [String: Any], _ p: Prefs) -> URLRequest? {
+        guard let s = clean(p.webhookURL), let url = URL(string: s),
+              (url.scheme == "http" || url.scheme == "https") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        return req
+    }
+
+    /// Fire-and-forget. Cheap to call on the hot path: the enabled-check + prefs
+    /// read and the POSTs all happen on a background queue, so a disabled
+    /// configuration (the default) adds no work to the lock path at all.
+    static func send(_ event: RemoteEvent, title: String, body: String, prefs: Prefs? = nil) {
+        DispatchQueue.global(qos: .utility).async {
+            let p = prefs ?? PrefsStore.load()
+            guard p.notifyEnabled, event.enabled(in: p) else { return }
+            let text = "🔒 Plonker Blocker\n\(title)\n\(body)"
+            if let r = telegramRequest(text, p) { URLSession.shared.dataTask(with: r).resume() }
+            if let r = webhookRequest(["app": "Plonker Blocker", "event": event.rawValue,
+                                       "title": title, "body": body,
+                                       "at": ISO8601DateFormatter().string(from: Date())], p) {
+                URLSession.shared.dataTask(with: r).resume()
+            }
+        }
+    }
+
+    /// Blocking variant for the "protection turned off" path, where the process
+    /// terminates immediately after — a fire-and-forget POST would be killed before
+    /// it left the machine. Waits (bounded) for every configured channel. Safe to
+    /// call on the main thread: URLSession delivers completions on its own queue.
+    static func sendBlocking(_ event: RemoteEvent, title: String, body: String, timeout: TimeInterval = 5) {
+        let p = PrefsStore.load()
+        guard p.notifyEnabled, event.enabled(in: p) else { return }
+        let text = "🔒 Plonker Blocker\n\(title)\n\(body)"
+        let group = DispatchGroup()
+        for req in [telegramRequest(text, p),
+                    webhookRequest(["app": "Plonker Blocker", "event": event.rawValue,
+                                    "title": title, "body": body], p)].compactMap({ $0 }) {
+            group.enter()
+            URLSession.shared.dataTask(with: req) { _, _, _ in group.leave() }.resume()
+        }
+        _ = group.wait(timeout: .now() + timeout)
+    }
+
+    /// Used by the manager's "Send Test" button. Reports the first channel result.
+    static func test(_ p: Prefs, completion: @escaping (Bool, String) -> Void) {
+        let text = "🔒 Plonker Blocker\nTest alert\nIf you can read this, alerts are configured correctly."
+        if let req = telegramRequest(text, p) {
+            URLSession.shared.dataTask(with: req) { data, resp, err in
+                if let err = err { return completion(false, "Telegram: \(err.localizedDescription)") }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if code == 200 { completion(true, "Telegram test message sent.") }
+                else {
+                    let detail = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    completion(false, "Telegram returned HTTP \(code). \(detail)")
+                }
+            }.resume()
+            return
+        }
+        if let req = webhookRequest(["app": "Plonker Blocker", "event": "test"], p) {
+            URLSession.shared.dataTask(with: req) { _, resp, err in
+                if let err = err { return completion(false, "Webhook: \(err.localizedDescription)") }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                completion((200...299).contains(code), "Webhook returned HTTP \(code).")
+            }.resume()
+            return
+        }
+        completion(false, "No Telegram bot or webhook URL is configured.")
     }
 }
 

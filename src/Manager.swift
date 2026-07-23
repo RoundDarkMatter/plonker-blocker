@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 // ============================================================================
 // Plonker Blocker manager: admin-gated config UI for the window-lock approach.
@@ -326,6 +327,37 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         PrefsStore.update { $0.soundEnabled.toggle() }; setupAppMenu()
     }
 
+    // Custom lock-screen animation + sound. The running guard resolves these from
+    // prefs on the next lock (cached by path), so no restart is needed.
+    @objc private func chooseAnimation() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a lock-screen animation"
+        panel.allowedContentTypes = [.gif, .image]
+        panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] resp in
+            guard let self, resp == .OK, let url = panel.url else { return }
+            PrefsStore.update { $0.animationPath = url.path; $0.ahahahEnabled = true }
+            self.setupAppMenu()
+        }
+    }
+    @objc private func chooseSound() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a wrong-passcode sound"
+        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio]
+        panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] resp in
+            guard let self, resp == .OK, let url = panel.url else { return }
+            PrefsStore.update { $0.soundPath = url.path; $0.soundEnabled = true }
+            self.setupAppMenu()
+        }
+    }
+    @objc private func resetMedia() {
+        PrefsStore.update { $0.animationPath = nil; $0.soundPath = nil }
+        setupAppMenu()
+    }
+
+    @objc private func editNotifications() { NotificationsEditor().runModal() }
+
     // MARK: Reload / status
 
     private func applyFilter() {
@@ -388,12 +420,14 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         }
         let sched = NSMenuItem(title: "Locking Schedule…", action: #selector(editSchedule), keyEquivalent: "")
         sched.target = self; appMenu.addItem(sched)
+        let notif = NSMenuItem(title: "Notifications…", action: #selector(editNotifications), keyEquivalent: "")
+        notif.target = self; appMenu.addItem(notif)
 
         appMenu.addItem(.separator())
 
         // ── Appearance ───────────────────────────────────────
         let prefs = PrefsStore.load()
-        // Lock-screen submenu (cosmetic toggles).
+        // Lock-screen submenu (toggles + custom animation/sound).
         let lockItem = NSMenuItem(title: "Lock Screen", action: nil, keyEquivalent: "")
         let lockMenu = NSMenu()
         let ah = NSMenuItem(title: "Play “Ah ah ah!” animation", action: #selector(toggleAhahah), keyEquivalent: "")
@@ -402,6 +436,18 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         let snd = NSMenuItem(title: "Play sound on wrong passcode", action: #selector(toggleSound), keyEquivalent: "")
         snd.target = self; snd.state = prefs.soundEnabled ? .on : .off
         lockMenu.addItem(snd)
+        lockMenu.addItem(.separator())
+        let chAnim = NSMenuItem(title: prefs.animationPath == nil ? "Choose Animation…" : "Change Animation…",
+                                action: #selector(chooseAnimation), keyEquivalent: "")
+        chAnim.target = self; lockMenu.addItem(chAnim)
+        let chSnd = NSMenuItem(title: prefs.soundPath == nil ? "Choose Sound…" : "Change Sound…",
+                               action: #selector(chooseSound), keyEquivalent: "")
+        chSnd.target = self; lockMenu.addItem(chSnd)
+        if prefs.animationPath != nil || prefs.soundPath != nil {
+            let resetM = NSMenuItem(title: "Reset to Built-in Animation & Sound",
+                                    action: #selector(resetMedia), keyEquivalent: "")
+            resetM.target = self; lockMenu.addItem(resetM)
+        }
         lockItem.submenu = lockMenu
         appMenu.addItem(lockItem)
 
@@ -720,6 +766,130 @@ final class AboutPanel: NSObject {
     }
 
     @objc private func closeTapped() { NSApp.stopModal() }
+}
+
+// MARK: - Notifications editor (app-modal panel)
+
+final class NotificationsEditor: NSObject {
+    private let panel: NSWindow
+    private let enableCheck: NSButton
+    private let tokenField = NSTextField()
+    private let chatField = NSTextField()
+    private let webhookField = NSTextField()
+    private let cbLocked: NSButton
+    private let cbUnlocked: NSButton
+    private let cbFailed: NSButton
+    private let cbProtOff: NSButton
+    private let statusLabel = NSTextField(labelWithString: "")
+
+    override init() {
+        panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 466),
+                         styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "Notifications"
+        panel.appearance = NSAppearance(named: .darkAqua)
+        enableCheck = NSButton(checkboxWithTitle: "Send external alerts (off by default)", target: nil, action: nil)
+        cbLocked = NSButton(checkboxWithTitle: "An app is locked", target: nil, action: nil)
+        cbUnlocked = NSButton(checkboxWithTitle: "An app is unlocked", target: nil, action: nil)
+        cbFailed = NSButton(checkboxWithTitle: "A wrong password is entered", target: nil, action: nil)
+        cbProtOff = NSButton(checkboxWithTitle: "Protection is turned off", target: nil, action: nil)
+        super.init()
+
+        let p = PrefsStore.load()
+        let c = panel.contentView!
+
+        func title(_ s: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, bold: Bool = false) {
+            let t = NSTextField(labelWithString: s)
+            t.font = bold ? .boldSystemFont(ofSize: 13) : .systemFont(ofSize: 11)
+            t.textColor = bold ? .labelColor : NSColor(white: 1, alpha: 0.7)
+            t.frame = NSRect(x: x, y: y, width: w, height: 16); c.addSubview(t)
+        }
+        func field(_ f: NSTextField, _ y: CGFloat, _ placeholder: String, _ value: String?) {
+            f.frame = NSRect(x: 24, y: y, width: 432, height: 22)
+            f.placeholderString = placeholder; f.stringValue = value ?? ""
+            f.font = .systemFont(ofSize: 12); f.lineBreakMode = .byTruncatingMiddle
+            c.addSubview(f)
+        }
+
+        title("Get alerted on your phone when protected apps are used.", 24, 430, 432, bold: true)
+        enableCheck.frame = NSRect(x: 24, y: 402, width: 432, height: 20)
+        enableCheck.state = p.notifyEnabled ? .on : .off
+        c.addSubview(enableCheck)
+
+        title("Telegram bot token", 24, 374, 300)
+        field(tokenField, 350, "123456:ABC-DEF… (from @BotFather)", p.telegramBotToken)
+        title("Telegram chat ID", 24, 322, 300)
+        field(chatField, 298, "e.g. 987654321 (from @userinfobot)", p.telegramChatID)
+        title("Webhook URL (optional)", 24, 270, 300)
+        field(webhookField, 246, "https://… receives a JSON POST", p.webhookURL)
+
+        title("Send an alert when:", 24, 216, 300)
+        cbLocked.frame = NSRect(x: 24, y: 190, width: 220, height: 20); cbLocked.state = p.notifyOnLocked ? .on : .off
+        cbUnlocked.frame = NSRect(x: 250, y: 190, width: 210, height: 20); cbUnlocked.state = p.notifyOnUnlocked ? .on : .off
+        cbFailed.frame = NSRect(x: 24, y: 166, width: 220, height: 20); cbFailed.state = p.notifyOnFailed ? .on : .off
+        cbProtOff.frame = NSRect(x: 250, y: 166, width: 210, height: 20); cbProtOff.state = p.notifyOnProtectionOff ? .on : .off
+        [cbLocked, cbUnlocked, cbFailed, cbProtOff].forEach { c.addSubview($0) }
+
+        let test = NSButton(title: "Send Test", target: self, action: #selector(testTapped))
+        test.bezelStyle = .rounded; test.frame = NSRect(x: 24, y: 108, width: 120, height: 30)
+        c.addSubview(test)
+        statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = NSColor(white: 1, alpha: 0.6)
+        statusLabel.maximumNumberOfLines = 3; statusLabel.lineBreakMode = .byWordWrapping
+        statusLabel.frame = NSRect(x: 156, y: 98, width: 300, height: 44); c.addSubview(statusLabel)
+
+        title("The bot token is stored on this Mac only. Alerts are sent directly to "
+            + "Telegram / your webhook — nowhere else.", 24, 56, 432)
+
+        let save = NSButton(title: "Save", target: self, action: #selector(saveTapped))
+        save.bezelStyle = .rounded; save.keyEquivalent = "\r"
+        save.frame = NSRect(x: 372, y: 16, width: 84, height: 32); c.addSubview(save)
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelTapped))
+        cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"
+        cancel.frame = NSRect(x: 280, y: 16, width: 84, height: 32); c.addSubview(cancel)
+    }
+
+    func runModal() { panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil) }
+
+    private func nilIfEmpty(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines); return t.isEmpty ? nil : t
+    }
+
+    // Build a Prefs carrying just the notification fields for a test send.
+    private func draftPrefs() -> Prefs {
+        var p = PrefsStore.load()
+        p.notifyEnabled = true
+        p.telegramBotToken = nilIfEmpty(tokenField.stringValue)
+        p.telegramChatID = nilIfEmpty(chatField.stringValue)
+        p.webhookURL = nilIfEmpty(webhookField.stringValue)
+        return p
+    }
+
+    @objc private func testTapped() {
+        statusLabel.textColor = NSColor(white: 1, alpha: 0.6)
+        statusLabel.stringValue = "Sending test…"
+        RemoteNotify.test(draftPrefs()) { [weak self] ok, msg in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.statusLabel.textColor = ok ? .systemGreen : .systemRed
+                self.statusLabel.stringValue = msg
+            }
+        }
+    }
+
+    @objc private func saveTapped() {
+        PrefsStore.update { p in
+            p.notifyEnabled = enableCheck.state == .on
+            p.telegramBotToken = nilIfEmpty(tokenField.stringValue)
+            p.telegramChatID = nilIfEmpty(chatField.stringValue)
+            p.webhookURL = nilIfEmpty(webhookField.stringValue)
+            p.notifyOnLocked = cbLocked.state == .on
+            p.notifyOnUnlocked = cbUnlocked.state == .on
+            p.notifyOnFailed = cbFailed.state == .on
+            p.notifyOnProtectionOff = cbProtOff.state == .on
+        }
+        NSApp.stopModal()
+    }
+
+    @objc private func cancelTapped() { NSApp.stopModal() }
 }
 
 // MARK: - Schedule editor (app-modal panel)
