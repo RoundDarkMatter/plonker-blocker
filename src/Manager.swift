@@ -373,18 +373,25 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         appMenu.addItem(about)
         appMenu.addItem(.separator())
 
-        let setPass = NSMenuItem(title: "Set Unlock Passcode…",
-                                 action: #selector(setPasscode), keyEquivalent: "")
+        // ── Protection ───────────────────────────────────────
+        let hasPass = PolicyStore.load().passcode != nil
+        let setPass = NSMenuItem(
+            title: hasPass ? "Change Unlock Passcode…" : "Set Unlock Passcode (Optional)…",
+            action: #selector(setPasscode), keyEquivalent: "")
         setPass.target = self
         appMenu.addItem(setPass)
-
+        if hasPass {
+            let rm = NSMenuItem(title: "Remove Unlock Passcode",
+                                action: #selector(removePasscode), keyEquivalent: "")
+            rm.target = self
+            appMenu.addItem(rm)
+        }
         let sched = NSMenuItem(title: "Locking Schedule…", action: #selector(editSchedule), keyEquivalent: "")
         sched.target = self; appMenu.addItem(sched)
-        let log = NSMenuItem(title: "Activity Log…", action: #selector(showLog), keyEquivalent: "")
-        log.target = self; appMenu.addItem(log)
 
         appMenu.addItem(.separator())
 
+        // ── Appearance ───────────────────────────────────────
         let prefs = PrefsStore.load()
         // Lock-screen submenu (cosmetic toggles).
         let lockItem = NSMenuItem(title: "Lock Screen", action: nil, keyEquivalent: "")
@@ -417,6 +424,12 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         bgMenu.addItem(reset)
         bgItem.submenu = bgMenu
         appMenu.addItem(bgItem)
+
+        appMenu.addItem(.separator())
+
+        // ── Activity ─────────────────────────────────────────
+        let log = NSMenuItem(title: "Activity Log…", action: #selector(showLog), keyEquivalent: "")
+        log.target = self; appMenu.addItem(log)
 
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Close Window",
@@ -461,6 +474,20 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         let ok = NSAlert(); ok.messageText = "Unlock passcode set."
         ok.informativeText = "Protected apps now unlock with this passcode or Touch ID."
         ok.addButton(withTitle: "OK"); ok.runModal()
+        setupAppMenu()   // reflect Change/Remove state
+    }
+
+    @objc private func removePasscode() {
+        let a = NSAlert()
+        a.messageText = "Remove unlock passcode?"
+        a.informativeText =
+            "The passcode is optional. Without it, protected apps fall back to the "
+          + "macOS administrator password dialog (Touch ID still works)."
+        a.addButton(withTitle: "Remove")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        do { try PolicyStore.setPasscode(nil) } catch { presentError(error); return }
+        setupAppMenu()
     }
 
     // MARK: About / Schedule / log

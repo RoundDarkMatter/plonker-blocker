@@ -28,8 +28,8 @@ Behavior:
 - Authenticate → unlocks for the **"Unlock for"** duration set in the app
   (default **5 min**; options 1 / 5 / 15 / 30 / 60 min or **Never**).
 - Cancel → lock stays; retry or **⌘⇥** to switch away.
-- **Wrong passcode → "Ah ah ah!"** immediately; 3 in a row start an escalating
-  lockout (5s→60s) while Touch ID keeps working.
+- **Wrong passcode → "Ah ah ah!"** and an immediate lockout — one try at a time,
+  with escalating backoff (5s→60s) — while Touch ID keeps working.
 
 ## Security model
 
@@ -68,13 +68,19 @@ Protection** (admin required).
 
 ## The "Ah ah ah!" animation & sound
 
-A built-in wagging-finger animation ships with the app; a system sound plays on a
-wrong passcode. Both can be toggled independently under **Lock Screen** in the app
-menu (both on by default). To use your own animation, drop a GIF at:
+The built-in wagging-finger animation is drawn natively (crisp on any display; no
+GIF compression artifacts); a sound plays on a wrong passcode. Both can be toggled
+independently under **Lock Screen** in the app menu (both on by default). To use
+your own animation and/or sound instead, drop files at:
 
 ```
 ~/Library/Application Support/PlonkerBlocker/ahahah.gif
+~/Library/Application Support/PlonkerBlocker/ahahah.mp3   (or .m4a/.aiff/.wav)
 ```
+
+Without a custom sound it falls back to the system "Funk" beep. Custom media is
+loaded from the user's support folder only — it is never bundled into the app,
+the repo, or the installers (keep any borrowed audio for personal use).
 
 ## Use it
 
@@ -103,7 +109,6 @@ commands require an admin account.)
 ./build.sh                     # -> "Plonker Blocker.app"
 tools/run_tests.sh             # compile + run the logic tests (schedule, passcode, codable…)
 swift tools/make_icon.swift    # re-rasterize src/AppIcon.svg -> src/AppIcon.icns
-tools/make_gif.swift           # regenerate the built-in ahahah.gif
 ```
 
 Artwork: `src/AppIcon.svg` (color mark) is the app icon; `src/TrayIcon.svg`

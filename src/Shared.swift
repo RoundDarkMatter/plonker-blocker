@@ -79,7 +79,7 @@ struct Prefs: Codable {
     var ahahahEnabled: Bool
     var soundEnabled: Bool
     static let `default` = Prefs(backgroundTheme: nil, backgroundImagePath: nil,
-                                 ahahahEnabled: true, soundEnabled: true)
+                                 ahahahEnabled: true, soundEnabled: false)
 
     init(backgroundTheme: String?, backgroundImagePath: String?, ahahahEnabled: Bool, soundEnabled: Bool) {
         self.backgroundTheme = backgroundTheme; self.backgroundImagePath = backgroundImagePath
@@ -90,7 +90,7 @@ struct Prefs: Codable {
         backgroundTheme = try c.decodeIfPresent(String.self, forKey: .backgroundTheme)
         backgroundImagePath = try c.decodeIfPresent(String.self, forKey: .backgroundImagePath)
         ahahahEnabled = try c.decodeIfPresent(Bool.self, forKey: .ahahahEnabled) ?? true
-        soundEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundEnabled) ?? true
+        soundEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundEnabled) ?? false
     }
 }
 

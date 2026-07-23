@@ -63,14 +63,14 @@ func testCodableBackCompat() {
     section("Codable back-compat")
     let dec = JSONDecoder()
 
-    // Empty prefs → cosmetic defaults ON.
+    // Empty prefs → animation ON, sound OFF by default.
     let p = try! dec.decode(Prefs.self, from: Data("{}".utf8))
-    check(p.ahahahEnabled && p.soundEnabled, "empty prefs default ahahah+sound ON")
+    check(p.ahahahEnabled && !p.soundEnabled, "empty prefs default ahahah ON, sound OFF")
     check(p.backgroundTheme == nil, "empty prefs default theme nil")
 
     // Partial prefs → only the named key changes.
-    let p2 = try! dec.decode(Prefs.self, from: Data(#"{"soundEnabled":false}"#.utf8))
-    check(p2.ahahahEnabled && !p2.soundEnabled, "partial prefs keep ahahah ON, sound OFF")
+    let p2 = try! dec.decode(Prefs.self, from: Data(#"{"soundEnabled":true}"#.utf8))
+    check(p2.ahahahEnabled && p2.soundEnabled, "partial prefs keep ahahah ON, sound explicitly ON")
 
     // Legacy policy without a schedule → schedule = always.
     let legacy = #"{"apps":[],"relockMinutes":15}"#

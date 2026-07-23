@@ -22,7 +22,10 @@ final class CoverController {
     private var windows: [NSWindow] = []
     private var nameLabels: [NSTextField] = []
     private var iconViews: [NSImageView] = []
-    private var nedryViews: [NSImageView] = []
+    private var nedryViews: [NSView] = []          // "Ah ah ah!" labels/gif to reveal
+    private var nedryHideViews: [NSView] = []      // card elements hidden while it shows
+    private var nedryGifViews: [NSImageView] = []  // only when the user supplied a gif
+    private var fingerViews: [NSTextField] = []    // native wagging finger
     private var bgViews: [BackgroundView] = []
     private var builtFrames: [CGRect] = []
     private(set) var visible = false
@@ -30,6 +33,7 @@ final class CoverController {
     // Primary-card controls.
     private weak var passcodeField: NSSecureTextField?
     private weak var subtitleLabel: NSTextField?
+    private weak var adminHintLabel: NSTextField?   // shown under "…magic word" in admin mode
     private weak var unlockButton: NSButton?
     private weak var touchIDButton: NSButton?
     private var passcodeMode = false
@@ -39,15 +43,9 @@ final class CoverController {
     var onTouchID: (() -> Void)?
     var onSystemUnlock: (() -> Void)?
 
-    // Prefer the user's own ahahah.gif; fall back to the bundled animation.
-    private lazy var nedryImage: NSImage? = {
-        let override = Paths.userSupport.appendingPathComponent("ahahah.gif")
-        if let img = NSImage(contentsOf: override) { return img }
-        if let url = Bundle.main.url(forResource: "ahahah", withExtension: "gif") {
-            return NSImage(contentsOf: url)
-        }
-        return nil
-    }()
+    // A user-supplied ahahah.gif takes precedence over the native animation.
+    private lazy var overrideGif: NSImage? =
+        NSImage(contentsOf: Paths.userSupport.appendingPathComponent("ahahah.gif"))
 
     /// `passcode` = show the inline passcode field; otherwise a button that
     /// triggers the system admin dialog. `biometrics` toggles the Touch ID button.
@@ -60,7 +58,7 @@ final class CoverController {
         for label in nameLabels { label.stringValue = appName }
         for iv in iconViews { iv.image = icon }
         // Clear any leftover "Ah ah ah!" / lockout state from a previous app.
-        for v in nedryViews { v.animates = false; v.isHidden = true }
+        hideNedry()
         passcodeField?.isEnabled = true
         unlockButton?.isEnabled = true
 
@@ -79,9 +77,37 @@ final class CoverController {
         visible = true
     }
 
-    // After too many failures — "Ah ah ah! You didn't say the magic word!"
+    // On a wrong attempt — "Ah ah ah! You didn't say the magic word!"
+    // The animation is drawn on the card's own surface: we hide the icon/name/
+    // subtitle and reveal the finger + text in their place, so there's no separate
+    // panel and therefore no edge/seam over the background glow.
     func showNedry() {
-        for v in nedryViews { v.isHidden = false; v.animates = true }
+        for v in nedryHideViews { v.isHidden = true }
+        for v in nedryViews { v.isHidden = false }
+        for g in nedryGifViews { g.animates = true }
+        adminHintLabel?.isHidden = passcodeMode   // admin-password hint only in admin mode
+        startWag()
+    }
+
+    private func hideNedry() {
+        for v in nedryViews { v.isHidden = true }
+        for g in nedryGifViews { g.animates = false }
+        for f in fingerViews { f.layer?.removeAnimation(forKey: "wag") }
+        adminHintLabel?.isHidden = true
+        for v in nedryHideViews { v.isHidden = false }
+    }
+
+    // Native finger wag (±20° about a low pivot, like a scolding wrist).
+    private func startWag() {
+        for f in fingerViews {
+            guard let l = f.layer else { continue }
+            l.anchorPoint = CGPoint(x: 0.5, y: 0.3)
+            l.position = CGPoint(x: f.frame.midX, y: f.frame.minY + f.frame.height * 0.3)
+            let a = CABasicAnimation(keyPath: "transform.rotation.z")
+            a.fromValue = -0.35; a.toValue = 0.35
+            a.duration = 0.4; a.autoreverses = true; a.repeatCount = .infinity
+            l.add(a, forKey: "wag")
+        }
     }
 
     // Disable the passcode field/Unlock during a lockout (Touch ID stays usable).
@@ -105,7 +131,7 @@ final class CoverController {
     }
 
     func hide() {
-        for v in nedryViews { v.animates = false; v.isHidden = true }
+        hideNedry()
         passcodeField?.stringValue = ""
         for w in windows { w.orderOut(nil) }
         visible = false
@@ -118,7 +144,9 @@ final class CoverController {
         if current != builtFrames {
             for w in windows { w.orderOut(nil) }
             windows.removeAll(); nameLabels.removeAll(); iconViews.removeAll()
-            nedryViews.removeAll(); bgViews.removeAll()
+            nedryViews.removeAll(); nedryHideViews.removeAll()
+            nedryGifViews.removeAll(); fingerViews.removeAll()
+            bgViews.removeAll()
         }
     }
 
@@ -172,7 +200,7 @@ final class CoverController {
         let iconView = NSImageView(frame: NSRect(x: (cardW - iconSize)/2, y: cardH - 32 - iconSize,
                                                  width: iconSize, height: iconSize))
         iconView.imageScaling = .scaleProportionallyUpOrDown
-        card.addSubview(iconView); iconViews.append(iconView)
+        card.addSubview(iconView); iconViews.append(iconView); nedryHideViews.append(iconView)
 
         let badgeCfg = NSImage.SymbolConfiguration(pointSize: 28, weight: .bold)
         let badge = NSImageView(frame: NSRect(x: iconView.frame.maxX - 24, y: iconView.frame.minY - 2,
@@ -180,7 +208,7 @@ final class CoverController {
         badge.image = NSImage(systemSymbolName: "lock.circle.fill", accessibilityDescription: nil)?
             .withSymbolConfiguration(badgeCfg)
         badge.contentTintColor = NSColor(srgbRed: 0.55, green: 0.5, blue: 0.98, alpha: 1)
-        card.addSubview(badge)
+        card.addSubview(badge); nedryHideViews.append(badge)
 
         func label(_ s: String, _ font: NSFont, _ color: NSColor, _ y: CGFloat, _ h: CGFloat) -> NSTextField {
             let t = NSTextField(labelWithString: s)
@@ -191,10 +219,12 @@ final class CoverController {
             return t
         }
         let name = label("App", .boldSystemFont(ofSize: 22), .white, cardH - 158, 28)
-        nameLabels.append(name)
-        _ = label("is locked", .systemFont(ofSize: 15), NSColor(white: 0.7, alpha: 1), cardH - 184, 20)
+        nameLabels.append(name); nedryHideViews.append(name)
+        let lockedLbl = label("is locked", .systemFont(ofSize: 15), NSColor(white: 0.7, alpha: 1), cardH - 184, 20)
+        nedryHideViews.append(lockedLbl)
         subtitleLabel = label("Administrator approval is required to open it.",
                               .systemFont(ofSize: 13), NSColor(white: 0.55, alpha: 1), cardH - 220, 18)
+        if let s = subtitleLabel { nedryHideViews.append(s) }
 
         // Inline passcode field.
         let field = NSSecureTextField(frame: NSRect(x: (cardW - 240)/2, y: 172, width: 240, height: 30))
@@ -226,20 +256,44 @@ final class CoverController {
         _ = label("or press ⌘⇥ to switch to another app",
                   .systemFont(ofSize: 11), NSColor(white: 0.42, alpha: 1), 36, 16)
 
-        // "Ah ah ah!" animation — covers only the icon/labels; the field + buttons
-        // below stay usable so you can keep trying.
-        let gif = NSImageView(frame: NSRect(x: 12, y: 204, width: cardW - 24, height: cardH - 214))
-        gif.imageScaling = .scaleProportionallyDown
-        gif.image = nedryImage
-        gif.animates = true
-        gif.isHidden = true
-        gif.wantsLayer = true
-        gif.layer?.backgroundColor = NSColor(srgbRed: 0.13, green: 0.14, blue: 0.18, alpha: 1).cgColor
-        gif.layer?.cornerRadius = 16
-        gif.layer?.masksToBounds = true
-        gif.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
-        card.addSubview(gif)
-        nedryViews.append(gif)
+        // "Ah ah ah!" animation. Drawn directly on the card (no separate panel →
+        // no edge/seam over the background glow); it replaces the hidden icon/name/
+        // subtitle above. A user-supplied ahahah.gif takes precedence.
+        if let img = overrideGif {
+            let gif = NSImageView(frame: NSRect(x: 20, y: 208, width: cardW - 40, height: cardH - 236))
+            gif.imageScaling = .scaleProportionallyDown
+            gif.image = img
+            gif.animates = false
+            gif.isHidden = true
+            gif.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+            card.addSubview(gif)
+            nedryGifViews.append(gif); nedryViews.append(gif)
+        } else {
+            let ahLbl = label("Ah ah ah!", .boldSystemFont(ofSize: 30), .white, cardH - 68, 36)
+            ahLbl.isHidden = true; nedryViews.append(ahLbl)
+            let finger = NSTextField(labelWithString: "☝️")
+            finger.font = .systemFont(ofSize: 84)
+            finger.alignment = .center
+            finger.frame = NSRect(x: (cardW - 120)/2, y: 250, width: 120, height: 96)
+            finger.wantsLayer = true
+            finger.isHidden = true
+            card.addSubview(finger)
+            fingerViews.append(finger); nedryViews.append(finger)
+            let wordLbl = label("You didn't say the magic word", .systemFont(ofSize: 14),
+                                NSColor(white: 0.7, alpha: 1), 210, 20)
+            wordLbl.isHidden = true; nedryViews.append(wordLbl)
+
+            // Smaller admin instruction, under the magic-word line (admin mode only —
+            // in passcode mode the field occupies this space).
+            let hint = NSTextField(wrappingLabelWithString:
+                "Please put the computer administrator password or contact your network administrator.")
+            hint.font = .systemFont(ofSize: 11); hint.textColor = NSColor(white: 0.5, alpha: 1)
+            hint.alignment = .center; hint.isSelectable = false; hint.drawsBackground = false
+            hint.isBezeled = false; hint.maximumNumberOfLines = 2
+            hint.frame = NSRect(x: 30, y: 168, width: cardW - 60, height: 34)
+            hint.isHidden = true
+            card.addSubview(hint); adminHintLabel = hint
+        }
 
         bg.addSubview(card)
         return bg
@@ -267,6 +321,21 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingHide: DispatchWorkItem?
     private var statusItem: NSStatusItem?
     private var authWatchdog: DispatchWorkItem?
+
+    // Wrong-attempt sound: prefer the user's own clip (ahahah.mp3/m4a/aiff/wav in
+    // the support folder), falling back to the system "Funk" beep.
+    private lazy var nedrySound: NSSound? = {
+        for ext in ["mp3", "m4a", "aiff", "wav"] {
+            let url = Paths.userSupport.appendingPathComponent("ahahah.\(ext)")
+            if let s = NSSound(contentsOf: url, byReference: true) { return s }
+        }
+        return NSSound(named: NSSound.Name("Funk"))
+    }()
+
+    private func playNedrySound() {
+        nedrySound?.stop()   // restart from the top on rapid retries
+        nedrySound?.play()
+    }
 
     // Cached policy (re-read only when the file's mtime changes) + fail-closed copy.
     private var cachedPolicy = Policy.empty
@@ -373,7 +442,7 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if hasPass {
                 // Passcode field is focused; the user can type or tap Touch ID.
                 // Re-assert any active brute-force lockout across cover re-shows.
-                if lockedOut() { cover.setLockout(true, message: "Too many attempts — wait a moment. Touch ID still works.") }
+                if lockedOut() { cover.setLockout(true, message: "Wrong passcode — wait a moment. Touch ID still works.") }
             }
             // No passcode set → don't auto-prompt; the user clicks "Unlock…" to
             // bring up the system admin dialog (via onSystemUnlock → attemptUnlock).
@@ -414,27 +483,26 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !authInProgress, !lockedOut(), !entered.isEmpty else { return }
         if Passcode.verify(entered, against: policy().passcode) { succeedUnlock(method: "passcode"); return }
 
-        // Wrong passcode: "Ah ah ah!" on the very first miss; after 3 in a row an
-        // escalating lockout (5s, 10s, 20s, 40s, 60s…) blocks online brute force.
+        // Wrong passcode: one try at a time. "Ah ah ah!" fires immediately and the
+        // field locks with an escalating backoff (5s, 10s, 20s, 40s, 60s cap) —
+        // blocks online brute force outright. Touch ID stays available.
         passFailStreak += 1
         let prefs = PrefsStore.load()
         AttemptLog.append(app: currentApp?.localizedName ?? "app",
                           bundleID: currentApp?.bundleIdentifier ?? "", event: "failed", method: "passcode")
         cover.rejectPasscode()
         if prefs.ahahahEnabled { cover.showNedry() }
-        if prefs.soundEnabled { NSSound(named: NSSound.Name("Funk"))?.play() }
-        if passFailStreak == 3 {
-            Notifier.notify(title: "⚠️ Failed unlock attempts",
+        if prefs.soundEnabled { playNedrySound() }
+        if passFailStreak == 1 {
+            Notifier.notify(title: "⚠️ Failed unlock attempt",
                             body: "Someone is trying to open “\(currentApp?.localizedName ?? "a locked app")”.")
         }
-        if passFailStreak >= 3 {
-            let backoff = min(60.0, 5.0 * pow(2.0, Double(passFailStreak - 3)))
-            lockoutUntil = Date().addingTimeInterval(backoff)
-            cover.setLockout(true, message: "Too many attempts — wait \(Int(backoff))s. Touch ID still works.")
-            DispatchQueue.main.asyncAfter(deadline: .now() + backoff) { [weak self] in
-                guard let self, !self.lockedOut() else { return }  // a newer lockout may be active
-                self.cover.setLockout(false, message: nil)
-            }
+        let backoff = min(60.0, 5.0 * pow(2.0, Double(passFailStreak - 1)))
+        lockoutUntil = Date().addingTimeInterval(backoff)
+        cover.setLockout(true, message: "Wrong passcode — wait \(Int(backoff))s. Touch ID still works.")
+        DispatchQueue.main.asyncAfter(deadline: .now() + backoff) { [weak self] in
+            guard let self, !self.lockedOut() else { return }  // a newer lockout may be active
+            self.cover.setLockout(false, message: nil)
         }
     }
 
@@ -516,7 +584,7 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         let prefs = PrefsStore.load()
                         if prefs.ahahahEnabled, outcome == .failed || (self.failCounts[pid] ?? 0) >= 3 {
                             self.cover.showNedry()
-                            if prefs.soundEnabled { NSSound(named: NSSound.Name("Funk"))?.play() }
+                            if prefs.soundEnabled { self.playNedrySound() }
                         }
                     }
                     // Re-check the real frontmost so a stranded cover is lowered.
@@ -578,9 +646,9 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let manage = NSMenuItem(title: "Manage Locked Apps…", action: #selector(openManager), keyEquivalent: "")
-        manage.target = self
-        menu.addItem(manage)
+        let options = NSMenuItem(title: "Options…", action: #selector(openManager), keyEquivalent: "")
+        options.target = self
+        menu.addItem(options)
 
         let off = NSMenuItem(title: "Turn Off Protection…", action: #selector(turnOff), keyEquivalent: "")
         off.target = self

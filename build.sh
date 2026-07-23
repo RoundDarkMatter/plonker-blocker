@@ -42,7 +42,6 @@ GUARDAPP="$CONTENTS/Library/LoginItems/PlonkerBlockerGuard.app"
 mkdir -p "$GUARDAPP/Contents/MacOS" "$GUARDAPP/Contents/Resources"
 cp build/PlonkerBlockerGuard "$GUARDAPP/Contents/MacOS/PlonkerBlockerGuard"
 cp src/GuardInfo.plist "$GUARDAPP/Contents/Info.plist"
-[ -f src/ahahah.gif ] && cp src/ahahah.gif "$GUARDAPP/Contents/Resources/ahahah.gif"
 [ -f src/TrayIcon.svg ] && cp src/TrayIcon.svg "$GUARDAPP/Contents/Resources/TrayIcon.svg"
 chmod +x "$GUARDAPP/Contents/MacOS/PlonkerBlockerGuard"
 
