@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Plonker Blocker</string>
+    <key>CFBundleDisplayName</key>
+    <string>Plonker Blocker</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.plonkerblocker.app</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <!-- PLACEHOLDER — replace with the real holder before release. -->
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Plonker Blocker. All rights reserved.</string>
+    <key>CFBundleExecutable</key>
+    <string>PlonkerBlocker</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- Not a background/agent app: show in Dock and menu bar. -->
+    <key>LSUIElement</key>
+    <false/>
+</dict>
+</plist>

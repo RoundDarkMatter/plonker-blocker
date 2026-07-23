@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient (Sleek macOS Dark) -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+
+    <!-- Plonker Face Gradient -->
+    <linearGradient id="faceGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="100%" stop-color="#EAB308"/>
+    </linearGradient>
+
+    <!-- Red Blocker Gradient -->
+    <linearGradient id="redBlockGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F87171"/>
+      <stop offset="50%" stop-color="#DC2626"/>
+      <stop offset="100%" stop-color="#991B1B"/>
+    </linearGradient>
+
+    <!-- Drop Shadows -->
+    <filter id="appShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+
+    <filter id="elementShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- Base macOS Squircle -->
+  <rect x="32" y="32" width="448" height="448" rx="100" ry="100" fill="url(#bgGrad)" filter="url(#appShadow)"/>
+
+  <!-- THE PLONKER (Goofy Face) -->
+  <g filter="url(#elementShadow)">
+    <!-- Head -->
+    <circle cx="256" cy="256" r="120" fill="url(#faceGrad)" stroke="#A16207" stroke-width="6"/>
+    
+    <!-- Googly Eyes (Whites) -->
+    <circle cx="206" cy="216" r="30" fill="#FFFFFF" stroke="#A16207" stroke-width="4"/>
+    <circle cx="306" cy="216" r="30" fill="#FFFFFF" stroke="#A16207" stroke-width="4"/>
+    
+    <!-- Crossed Pupils -->
+    <circle cx="220" cy="226" r="12" fill="#1E293B"/>
+    <circle cx="292" cy="206" r="10" fill="#1E293B"/> <!-- Slightly derpy size difference -->
+    
+    <!-- Silly open mouth -->
+    <path d="M 226 286 Q 256 326 286 286" fill="none" stroke="#713F12" stroke-width="12" stroke-linecap="round"/>
+    <!-- Tongue hanging out -->
+    <path d="M 246 304 Q 256 336 266 304 Z" fill="#EF4444"/>
+  </g>
+
+  <!-- THE BLOCKER (Prohibition Sign) -->
+  <g filter="url(#elementShadow)">
+    <!-- Red Circle -->
+    <circle cx="256" cy="256" r="150" fill="none" stroke="url(#redBlockGrad)" stroke-width="36"/>
+    <!-- Diagonal Slash -->
+    <line x1="160" y1="160" x2="352" y2="352" stroke="url(#redBlockGrad)" stroke-width="36" stroke-linecap="round"/>
+    
+    <!-- Small Padlock locking the sign -->
+    <rect x="340" y="350" width="50" height="40" rx="8" fill="#F59E0B" stroke="#451A03" stroke-width="3"/>
+    <path d="M 350 350 V 335 A 15 15 0 0 1 380 335 V 350" fill="none" stroke="#CBD5E1" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="365" cy="370" r="5" fill="#451A03"/>
+  </g>
+
+  <!-- Top Glass Highlight Overlay (macOS standard style) -->
+  <path d="M 32,132 C 32,76.7 76.7,32 132,32 L 380,32 C 435.3,32 480,76.7 480,132 L 480,180 C 280,140 160,220 32,160 Z" fill="#FFFFFF" fill-opacity="0.06"/>
+</svg>

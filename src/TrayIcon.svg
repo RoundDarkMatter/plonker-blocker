@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Outer prohibition circle -->
+  <circle cx="12" cy="12" r="10" />
+  
+  <!-- Diagonal Slash -->
+  <line x1="5" y1="5" x2="19" y2="19" />
+  
+  <!-- Plonker Eyes (offset to look derpy) -->
+  <circle cx="9" cy="10" r="1" fill="#000000" stroke="none" />
+  <circle cx="15" cy="9" r="1" fill="#000000" stroke="none" />
+  
+  <!-- Squiggly/Silly Mouth -->
+  <path d="M 9 15 Q 12 17 15 14" />
+</svg>
