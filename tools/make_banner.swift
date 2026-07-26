@@ -53,17 +53,13 @@ func text(_ s: String, _ font: NSFont, _ color: NSColor, x: CGFloat, top: CGFloa
     (s as NSString).draw(in: NSRect(x: x, y: H - top - h, width: w, height: h), withAttributes: a)
 }
 let tx: CGFloat = 430
-text("Plonker Blocker", .systemFont(ofSize: 76, weight: .bold), .white, x: tx, top: 90, w: 820, h: 92)
+text("Plonker Blocker", .systemFont(ofSize: 76, weight: .bold), .white, x: tx, top: 104, w: 820, h: 92)
 text("Lock any macOS app behind a passcode,\nTouch ID, or an administrator password.",
      .systemFont(ofSize: 27, weight: .regular), NSColor(white: 0.74, alpha: 1),
-     x: tx + 2, top: 192, w: 800, h: 82, lineHeight: 37)
-
-let violet = NSColor(srgbRed: 0.62, green: 0.55, blue: 1, alpha: 1)
-let italic = NSFontManager.shared.convert(.systemFont(ofSize: 22), toHaveTrait: .italicFontMask)
-text("“Ah ah ah! You didn't say the magic word.”", italic, violet, x: tx + 2, top: 292, w: 800, h: 34)
+     x: tx + 2, top: 206, w: 800, h: 82, lineHeight: 37)
 
 text("macOS 11 – 26   ·   universal (arm64 + x86_64)   ·   Apache 2.0",
-     .systemFont(ofSize: 19, weight: .medium), NSColor(white: 0.5, alpha: 1), x: tx + 2, top: 348, w: 820, h: 28)
+     .systemFont(ofSize: 19, weight: .medium), NSColor(white: 0.5, alpha: 1), x: tx + 2, top: 306, w: 820, h: 28)
 
 NSGraphicsContext.restoreGraphicsState()
 try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: out))
