@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/banner.png" alt="Plonker Blocker" width="860">
+</p>
+
 # Plonker Blocker
 
 Keeps unauthorised users out of the apps you choose by locking
