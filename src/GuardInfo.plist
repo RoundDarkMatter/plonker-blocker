@@ -14,9 +14,8 @@
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
-    <!-- PLACEHOLDER — replace with the real holder before release. -->
     <key>NSHumanReadableCopyright</key>
-    <string>© 2026 Plonker Blocker. All rights reserved.</string>
+    <string>Copyright © 2026 RoundDarkMatter. Licensed under the Apache License 2.0.</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>

@@ -1,3 +1,6 @@
+// Plonker Blocker — Copyright 2026 RoundDarkMatter
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
 
 // Generates src/TrayIcon.pdf — a vector, template menu-bar glyph (derpy

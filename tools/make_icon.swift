@@ -1,3 +1,6 @@
+// Plonker Blocker — Copyright 2026 RoundDarkMatter
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
 
 // Rasterizes src/AppIcon.svg (the color "plonker face + prohibition sign" mark)

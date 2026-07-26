@@ -1,3 +1,6 @@
+// Plonker Blocker — Copyright 2026 RoundDarkMatter
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
 import LocalAuthentication
 
@@ -143,6 +146,9 @@ final class CoverController {
         unlockButton?.isEnabled = !locked
         subtitleLabel?.stringValue = message
             ?? "Enter your Plonker Blocker passcode to open it."
+        // showNedry hides the subtitle; reveal it so the countdown / "Touch ID
+        // still works" hint is visible even while the "Ah ah ah!" is showing.
+        if locked { subtitleLabel?.isHidden = false }
     }
 
     // Wrong passcode: clear + shake, keep focus.
@@ -352,6 +358,7 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingHide: DispatchWorkItem?
     private var statusItem: NSStatusItem?
     private var authWatchdog: DispatchWorkItem?
+    private var authGen = 0        // identifies the current admin-auth attempt
 
     // Wrong-attempt sound. Resolved from prefs.soundPath, then a legacy drop-in
     // (ahahah.mp3/m4a/aiff/wav), then the system "Funk" beep. Cached by path so a
@@ -368,8 +375,9 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if path != soundCachePath {
             soundCachePath = path
-            soundCache = path.isEmpty ? NSSound(named: NSSound.Name("Funk"))
-                                      : NSSound(contentsOfFile: path, byReference: true)
+            // A configured path that fails to load still falls back to "Funk".
+            soundCache = (path.isEmpty ? nil : NSSound(contentsOfFile: path, byReference: true))
+                         ?? NSSound(named: NSSound.Name("Funk"))
         }
         return soundCache
     }
@@ -457,18 +465,24 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func screensChanged() {
         cover.rebuildIfGeometryChanged()
         if coveredPID != nil, let app = currentApp {
-            let hasPass = policy().passcode != nil
-            cover.show(appName: app.localizedName ?? "This app", icon: app.icon,
-                       passcode: hasPass, biometrics: biometricsAvailable(), prefs: PrefsStore.load())
-            // Re-showing re-enables the field, so re-assert an active lockout.
-            if hasPass, lockedOut() {
-                cover.setLockout(true, message: "Wrong passcode — wait a moment. Touch ID still works.")
-            }
+            presentCover(for: app, appName: app.localizedName ?? "This app", prefs: PrefsStore.load())
         }
     }
 
     private func app(from n: Notification) -> NSRunningApplication? {
         n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+    }
+
+    private static let lockoutMessage = "Wrong passcode — wait a moment. Touch ID still works."
+
+    /// Show (or re-show) the cover over `app` and re-assert any active lockout —
+    /// shared by the initial lock (evaluate) and re-lays (screensChanged).
+    private func presentCover(for app: NSRunningApplication, appName: String, prefs: Prefs) {
+        let hasPass = policy().passcode != nil
+        cover.show(appName: appName, icon: app.icon,
+                   passcode: hasPass, biometrics: biometricsAvailable(), prefs: prefs)
+        // Re-showing re-enables the field, so re-assert an active brute-force lockout.
+        if hasPass, lockedOut() { cover.setLockout(true, message: Self.lockoutMessage) }
     }
 
     private func evaluate(_ app: NSRunningApplication?) {
@@ -493,20 +507,12 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             coveredPID = app.processIdentifier
             currentApp = app
             let appName = app.localizedName ?? bid
-            let hasPass = p.passcode != nil
 
             // Paint the cover FIRST — logging (disk) and notifications must never
-            // gate the user-visible lock. Load prefs once and reuse it.
+            // gate the user-visible lock. Load prefs once and reuse it. (No passcode
+            // set → no auto-prompt; the user clicks "Unlock…" for the admin dialog.)
             let prefs = PrefsStore.load()
-            cover.show(appName: appName, icon: app.icon,
-                       passcode: hasPass, biometrics: biometricsAvailable(), prefs: prefs)
-            if hasPass {
-                // Passcode field is focused; the user can type or tap Touch ID.
-                // Re-assert any active brute-force lockout across cover re-shows.
-                if lockedOut() { cover.setLockout(true, message: "Wrong passcode — wait a moment. Touch ID still works.") }
-            }
-            // No passcode set → don't auto-prompt; the user clicks "Unlock…" to
-            // bring up the system admin dialog (via onSystemUnlock → attemptUnlock).
+            presentCover(for: app, appName: appName, prefs: prefs)
 
             AttemptLog.append(app: appName, bundleID: bid, event: "locked")
             Notifier.notify(title: "🔒 \(appName) is locked", body: "Plonker Blocker is protecting it.")
@@ -627,10 +633,13 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func attemptUnlock(_ app: NSRunningApplication) {
         guard !authInProgress else { return }
         authInProgress = true
+        authGen &+= 1
+        let gen = authGen
         // Watchdog: never let a wedged auth call leave the cover permanently stuck.
         let dog = DispatchWorkItem { [weak self] in
-            guard let self, self.authInProgress else { return }
+            guard let self, self.authGen == gen, self.authInProgress else { return }
             self.authInProgress = false
+            self.authWatchdog = nil
             self.evaluate(NSWorkspace.shared.frontmostApplication)
         }
         authWatchdog = dog
@@ -645,8 +654,12 @@ final class GuardDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.authWatchdog?.cancel(); self.authWatchdog = nil
-                self.authInProgress = false
+                // Only touch shared auth state if this is still the current attempt
+                // (a stale completion must not cancel a newer attempt's watchdog).
+                if self.authGen == gen {
+                    self.authWatchdog?.cancel(); self.authWatchdog = nil
+                    self.authInProgress = false
+                }
                 // Only unlock if the app we prompted for is still the covered,
                 // live app — a kill during the prompt must not record a stale pid.
                 if outcome == .authorized, self.coveredPID == pid, !app.isTerminated {

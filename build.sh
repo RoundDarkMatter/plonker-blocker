@@ -36,6 +36,9 @@ cp build/PlonkerBlocker "$MACOS/PlonkerBlocker"
 cp src/Info.plist "$CONTENTS/Info.plist"
 mkdir -p "$CONTENTS/Resources"
 [ -f src/AppIcon.icns ] && cp src/AppIcon.icns "$CONTENTS/Resources/AppIcon.icns"
+# Apache 2.0 asks that the license (and NOTICE) travel with redistributions.
+[ -f LICENSE ] && cp LICENSE "$CONTENTS/Resources/LICENSE"
+[ -f NOTICE ] && cp NOTICE "$CONTENTS/Resources/NOTICE"
 chmod +x "$MACOS/PlonkerBlocker"
 
 # The guard ships as its own LSUIElement .app so launchd-launched instances can

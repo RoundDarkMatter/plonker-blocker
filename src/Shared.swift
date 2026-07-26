@@ -1,3 +1,6 @@
+// Plonker Blocker — Copyright 2026 RoundDarkMatter
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
 import CryptoKit
 import Security
@@ -34,11 +37,16 @@ struct Schedule: Codable, Equatable {
         let c = calendar.dateComponents([.weekday, .hour, .minute], from: date)
         guard let wd = c.weekday, let h = c.hour, let m = c.minute else { return true }
         let now = h * 60 + m
-        for w in windows where w.days.contains(wd) {
+        for w in windows {
             if w.start <= w.end {
-                if now >= w.start && now < w.end { return true }
-            } else if now >= w.start || now < w.end {   // wraps midnight
-                return true
+                if w.days.contains(wd) && now >= w.start && now < w.end { return true }
+            } else {
+                // Wrapping window: the evening part [start, 24:00) belongs to the
+                // start day; the morning part [00:00, end) belongs to the NEXT day,
+                // so it must be attributed to the day that started it (yesterday).
+                if w.days.contains(wd) && now >= w.start { return true }
+                let prev = (wd == 1) ? 7 : wd - 1
+                if w.days.contains(prev) && now < w.end { return true }
             }
         }
         return false
@@ -73,8 +81,10 @@ struct Policy: Codable {
 }
 
 // Cosmetic + convenience preferences (NOT security). User-owned.
-// All properties have defaults, so the compiler-synthesized Codable fills any
-// missing key with its default — old prefs.json files decode forward-compatibly.
+// Old prefs.json files decode forward-compatibly, but NOT via synthesized Codable
+// (Swift's synthesized Decodable throws keyNotFound for a missing non-optional key
+// and ignores property defaults). The lenient init(from:) in the extension below is
+// what supplies each missing key's default — which is why that extension exists.
 struct Prefs: Codable {
     var backgroundTheme: String? = nil
     var backgroundImagePath: String? = nil
@@ -83,15 +93,15 @@ struct Prefs: Codable {
     var animationPath: String? = nil     // custom lock-screen animation (gif/image); nil = built-in
     var soundPath: String? = nil         // custom wrong-attempt sound; nil = system "Funk"
 
-    // External alerts (Telegram / generic webhook). Off by default.
+    // External alerts (Telegram / generic webhook). Off by default. The bot token /
+    // chat id / webhook URL are credentials and live in SecretStore, not here.
     var notifyEnabled: Bool = false
-    var telegramBotToken: String? = nil
-    var telegramChatID: String? = nil
-    var webhookURL: String? = nil
     var notifyOnLocked: Bool = false
     var notifyOnUnlocked: Bool = true
     var notifyOnFailed: Bool = true
     var notifyOnProtectionOff: Bool = true
+
+    var passcodeNudgeSkipped: Bool = false   // "Skip" was chosen on the set-passcode nudge
 
     static let `default` = Prefs()
 }
@@ -111,13 +121,11 @@ extension Prefs {
         animationPath = s(.animationPath)
         soundPath = s(.soundPath)
         notifyEnabled = b(.notifyEnabled, false)
-        telegramBotToken = s(.telegramBotToken)
-        telegramChatID = s(.telegramChatID)
-        webhookURL = s(.webhookURL)
         notifyOnLocked = b(.notifyOnLocked, false)
         notifyOnUnlocked = b(.notifyOnUnlocked, true)
         notifyOnFailed = b(.notifyOnFailed, true)
         notifyOnProtectionOff = b(.notifyOnProtectionOff, true)
+        passcodeNudgeSkipped = b(.passcodeNudgeSkipped, false)
     }
 }
 
@@ -164,6 +172,9 @@ enum Paths {
     static var policy: URL { systemDir.appendingPathComponent("policy.json") }
     static var prefs: URL { userSupport.appendingPathComponent("prefs.json") }
     static var attempts: URL { userSupport.appendingPathComponent("attempts.jsonl") }
+    /// Notification destination secrets (bot token etc.), kept out of prefs.json
+    /// and written owner-only (chmod 600).
+    static var secrets: URL { userSupport.appendingPathComponent("secrets.json") }
 
     /// Pre-rename location, for one-time migration.
     static let legacy: URL = FileManager.default
@@ -192,11 +203,15 @@ func run(_ path: String, _ args: [String]) -> (code: Int32, out: String) {
 
 func userIsAdmin() -> Bool {
     if getuid() == 0 { return true }
+    let adminGID: gid_t = 80   // macOS built-in "admin" group
     var groups = [gid_t](repeating: 0, count: Int(NGROUPS_MAX))
     let n = getgroups(Int32(groups.count), &groups)
-    if n >= 0 { for i in 0..<Int(n) where groups[i] == 80 { return true } }
+    if n >= 0 { for i in 0..<Int(n) where groups[i] == adminGID { return true } }
     return false
 }
+
+// One shared formatter — ISO8601DateFormatter is comparatively expensive to build.
+let iso8601 = ISO8601DateFormatter()
 
 func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
@@ -248,6 +263,12 @@ enum PolicyStore {
             do {
                 if !fm.fileExists(atPath: Paths.systemDir.path) {
                     try fm.createDirectory(at: Paths.systemDir, withIntermediateDirectories: true)
+                    // Only root can reach this create; normalize to the setgid,
+                    // admin-group dir so later non-root admin writes stay prompt-free.
+                    if getuid() == 0 {
+                        run("/usr/sbin/chown", ["root:admin", Paths.systemDir.path])
+                        run("/bin/chmod", ["2775", Paths.systemDir.path])
+                    }
                 }
                 try data.write(to: Paths.policy, options: .atomic)
                 run("/bin/chmod", ["664", Paths.policy.path])
@@ -275,7 +296,7 @@ enum PolicyStore {
             throw AppError.alreadyProtected(AppInfo.displayName(of: url))
         }
         p.apps.append(ProtectedApp(name: AppInfo.displayName(of: url), bundleID: bid,
-                                   path: url.path, addedAt: ISO8601DateFormatter().string(from: Date())))
+                                   path: url.path, addedAt: iso8601.string(from: Date())))
         guard write(p) else { throw AppError.policyWriteFailed }
     }
 
@@ -289,8 +310,9 @@ enum PolicyStore {
         return true
     }
 
-    static func reorder(_ apps: [ProtectedApp]) {
-        var p = load(); p.apps = apps; write(p)
+    static func reorder(_ apps: [ProtectedApp]) throws {
+        var p = load(); p.apps = apps
+        guard write(p) else { throw AppError.policyWriteFailed }
     }
     static func setRelock(_ minutes: Int) throws { var p = load(); p.relockMinutes = minutes; guard write(p) else { throw AppError.policyWriteFailed } }
     static func setSchedule(_ s: Schedule) throws { var p = load(); p.schedule = s; guard write(p) else { throw AppError.policyWriteFailed } }
@@ -308,9 +330,51 @@ enum PrefsStore {
     static func save(_ p: Prefs) {
         try? Paths.ensureUserDir()
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted]
-        if let d = try? e.encode(p) { try? d.write(to: Paths.prefs, options: .atomic) }
+        guard let d = try? e.encode(p) else { return }
+        try? d.write(to: Paths.prefs, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Paths.prefs.path)
     }
-    static func update(_ mutate: (inout Prefs) -> Void) { var p = load(); mutate(&p); save(p) }
+    @discardableResult
+    static func update(_ mutate: (inout Prefs) -> Void) -> Prefs { var p = load(); mutate(&p); save(p); return p }
+}
+
+// MARK: - Notification destination secrets (owner-only file, NOT in prefs.json)
+
+// The bot token / webhook are credentials, so they live in their own 0600 file
+// rather than the world-readable prefs.json. (Encryption-at-rest via the Keychain
+// would need Developer-ID signing to share between the manager and the background
+// guard; owner-only file perms are the robust, prompt-free choice for this build.)
+struct NotifySecrets: Codable, Equatable {
+    var telegramBotToken: String? = nil
+    var telegramChatID: String? = nil
+    var webhookURL: String? = nil
+    var isEmpty: Bool { (telegramBotToken ?? "").isEmpty && (telegramChatID ?? "").isEmpty && (webhookURL ?? "").isEmpty }
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        telegramBotToken = try c.decodeIfPresent(String.self, forKey: .telegramBotToken)
+        telegramChatID = try c.decodeIfPresent(String.self, forKey: .telegramChatID)
+        webhookURL = try c.decodeIfPresent(String.self, forKey: .webhookURL)
+    }
+}
+
+enum SecretStore {
+    static func load() -> NotifySecrets {
+        guard let d = try? Data(contentsOf: Paths.secrets),
+              let s = try? JSONDecoder().decode(NotifySecrets.self, from: d) else { return NotifySecrets() }
+        return s
+    }
+    static func save(_ s: NotifySecrets) {
+        try? Paths.ensureUserDir()
+        let fm = FileManager.default
+        guard let data = try? JSONEncoder().encode(s) else { return }
+        // Nothing configured → don't leave an empty secrets file lying around.
+        if s.isEmpty { try? fm.removeItem(at: Paths.secrets); return }
+        // Create/replace owner-only (rw-------), and harden any pre-existing file.
+        fm.createFile(atPath: Paths.secrets.path, contents: data,
+                      attributes: [.posixPermissions: 0o600])
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Paths.secrets.path)
+    }
 }
 
 // MARK: - Attempt log (user-owned, append-only JSONL)
@@ -318,7 +382,7 @@ enum PrefsStore {
 enum AttemptLog {
     static func append(app: String, bundleID: String, event: String, method: String? = nil) {
         try? Paths.ensureUserDir()
-        let a = Attempt(at: ISO8601DateFormatter().string(from: Date()),
+        let a = Attempt(at: iso8601.string(from: Date()),
                         app: app, bundleID: bundleID, event: event, method: method)
         guard let line = try? JSONEncoder().encode(a) else { return }
         let data = line + Data("\n".utf8)
@@ -407,8 +471,8 @@ enum RemoteNotify {
         return t.isEmpty ? nil : t
     }
 
-    private static func telegramRequest(_ text: String, _ p: Prefs) -> URLRequest? {
-        guard let token = clean(p.telegramBotToken), let chat = clean(p.telegramChatID),
+    private static func telegramRequest(_ text: String, _ sec: NotifySecrets) -> URLRequest? {
+        guard let token = clean(sec.telegramBotToken), let chat = clean(sec.telegramChatID),
               let url = URL(string: "https://api.telegram.org/bot\(token)/sendMessage") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -416,8 +480,8 @@ enum RemoteNotify {
         return req
     }
 
-    private static func webhookRequest(_ payload: [String: Any], _ p: Prefs) -> URLRequest? {
-        guard let s = clean(p.webhookURL), let url = URL(string: s),
+    private static func webhookRequest(_ payload: [String: Any], _ sec: NotifySecrets) -> URLRequest? {
+        guard let s = clean(sec.webhookURL), let url = URL(string: s),
               (url.scheme == "http" || url.scheme == "https") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -432,11 +496,12 @@ enum RemoteNotify {
         DispatchQueue.global(qos: .utility).async {
             let p = prefs ?? PrefsStore.load()
             guard p.notifyEnabled, event.enabled(in: p) else { return }
+            let sec = SecretStore.load()
             let text = "🔒 Plonker Blocker\n\(title)\n\(body)"
-            if let r = telegramRequest(text, p) { URLSession.shared.dataTask(with: r).resume() }
+            if let r = telegramRequest(text, sec) { URLSession.shared.dataTask(with: r).resume() }
             if let r = webhookRequest(["app": "Plonker Blocker", "event": event.rawValue,
                                        "title": title, "body": body,
-                                       "at": ISO8601DateFormatter().string(from: Date())], p) {
+                                       "at": iso8601.string(from: Date())], sec) {
                 URLSession.shared.dataTask(with: r).resume()
             }
         }
@@ -449,11 +514,12 @@ enum RemoteNotify {
     static func sendBlocking(_ event: RemoteEvent, title: String, body: String, timeout: TimeInterval = 5) {
         let p = PrefsStore.load()
         guard p.notifyEnabled, event.enabled(in: p) else { return }
+        let sec = SecretStore.load()
         let text = "🔒 Plonker Blocker\n\(title)\n\(body)"
         let group = DispatchGroup()
-        for req in [telegramRequest(text, p),
+        for req in [telegramRequest(text, sec),
                     webhookRequest(["app": "Plonker Blocker", "event": event.rawValue,
-                                    "title": title, "body": body], p)].compactMap({ $0 }) {
+                                    "title": title, "body": body], sec)].compactMap({ $0 }) {
             group.enter()
             URLSession.shared.dataTask(with: req) { _, _, _ in group.leave() }.resume()
         }
@@ -461,9 +527,9 @@ enum RemoteNotify {
     }
 
     /// Used by the manager's "Send Test" button. Reports the first channel result.
-    static func test(_ p: Prefs, completion: @escaping (Bool, String) -> Void) {
+    static func test(_ sec: NotifySecrets, completion: @escaping (Bool, String) -> Void) {
         let text = "🔒 Plonker Blocker\nTest alert\nIf you can read this, alerts are configured correctly."
-        if let req = telegramRequest(text, p) {
+        if let req = telegramRequest(text, sec) {
             URLSession.shared.dataTask(with: req) { data, resp, err in
                 if let err = err { return completion(false, "Telegram: \(err.localizedDescription)") }
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
@@ -475,7 +541,7 @@ enum RemoteNotify {
             }.resume()
             return
         }
-        if let req = webhookRequest(["app": "Plonker Blocker", "event": "test"], p) {
+        if let req = webhookRequest(["app": "Plonker Blocker", "event": "test"], sec) {
             URLSession.shared.dataTask(with: req) { _, resp, err in
                 if let err = err { return completion(false, "Webhook: \(err.localizedDescription)") }
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
@@ -673,6 +739,27 @@ enum Migration {
     @discardableResult
     static func run() -> Bool {
         let fm = FileManager.default
+
+        // Move any plaintext notification secrets out of a world-readable prefs.json
+        // into the owner-only secrets file, then rewrite prefs (0600) without them.
+        if let d = try? Data(contentsOf: Paths.prefs),
+           let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            let tok = obj["telegramBotToken"] as? String
+            let chat = obj["telegramChatID"] as? String
+            let hook = obj["webhookURL"] as? String
+            if [tok, chat, hook].contains(where: { !($0 ?? "").isEmpty }) {
+                var sec = SecretStore.load()
+                if (sec.telegramBotToken ?? "").isEmpty { sec.telegramBotToken = tok }
+                if (sec.telegramChatID ?? "").isEmpty { sec.telegramChatID = chat }
+                if (sec.webhookURL ?? "").isEmpty { sec.webhookURL = hook }
+                SecretStore.save(sec)
+                PrefsStore.save(PrefsStore.load())   // drops the secret keys, writes 0600
+            } else {
+                // No secrets to move, but harden perms if the file is still group/world-readable.
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Paths.prefs.path)
+            }
+        }
+
         // Prefs: theme carried over from old settings.json (if new prefs absent).
         if !fm.fileExists(atPath: Paths.prefs.path) {
             let oldSettings = Paths.legacy.appendingPathComponent("settings.json")

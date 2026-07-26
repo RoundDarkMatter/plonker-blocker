@@ -1,3 +1,6 @@
+// Plonker Blocker — Copyright 2026 RoundDarkMatter
+// SPDX-License-Identifier: Apache-2.0
+
 import Foundation
 
 // Standalone test runner for Plonker Blocker's pure logic. Compiled together with
@@ -38,6 +41,17 @@ func testSchedule() {
     check(overnight.locks(at: at(2024, 1, 3, 5, 0), calendar: utc), "05:00 in overnight window → locked")
     check(!overnight.locks(at: at(2024, 1, 3, 12, 0), calendar: utc), "12:00 outside overnight window → unlocked")
     check(overnight.locks(at: at(2024, 1, 3, 20, 0), calendar: utc), "20:00 at window start (inclusive) → locked")
+
+    // Wrapping window on SELECTED days only — the after-midnight tail is attributed
+    // to the day the window started (regression test for the weekday mis-attribution).
+    // 2024: Jan 5 = Fri(6), Jan 6 = Sat(7), Jan 8 = Mon(2), Jan 9 = Tue(3).
+    let friNight = Schedule(enabled: true,
+        windows: [ScheduleWindow(days: [2, 3, 4, 5, 6], start: 20 * 60, end: 6 * 60)])  // Mon–Fri 20:00–06:00
+    check(friNight.locks(at: at(2024, 1, 5, 22, 0), calendar: utc), "Fri 22:00 → locked (evening part)")
+    check(friNight.locks(at: at(2024, 1, 6, 3, 0), calendar: utc), "Sat 03:00 → locked (Fri night wraps in)")
+    check(!friNight.locks(at: at(2024, 1, 6, 7, 0), calendar: utc), "Sat 07:00 → unlocked (past window end)")
+    check(!friNight.locks(at: at(2024, 1, 8, 3, 0), calendar: utc), "Mon 03:00 → unlocked (Sun night not selected)")
+    check(friNight.locks(at: at(2024, 1, 9, 3, 0), calendar: utc), "Tue 03:00 → locked (Mon night wraps in)")
 
     // Enabled but no windows → never locks.
     check(!Schedule(enabled: true, windows: []).locks(at: at(2024, 1, 3, 12, 0), calendar: utc),
@@ -122,6 +136,7 @@ func testNotifyPrefs() {
     check(d.notifyOnUnlocked && d.notifyOnFailed && d.notifyOnProtectionOff,
           "unlocked/failed/protection-off alerts on by default")
     check(d.animationPath == nil && d.soundPath == nil, "no custom media by default")
+    check(!d.passcodeNudgeSkipped, "passcode nudge not skipped by default")
 
     check(RemoteEvent.protectionOff.rawValue == "protection_off", "protectionOff maps to the log event name")
 
@@ -130,13 +145,12 @@ func testNotifyPrefs() {
     check(RemoteEvent.locked.enabled(in: p), "locked event honors its flag when on")
     check(!RemoteEvent.unlocked.enabled(in: p), "unlocked event honors its flag when off")
 
-    // New fields survive a JSON round-trip and old files still decode.
+    // Prefs (flags/media, NOT credentials) survive a JSON round-trip.
     var full = Prefs.default
-    full.notifyEnabled = true; full.telegramBotToken = "tok"; full.telegramChatID = "42"
+    full.notifyEnabled = true
     full.animationPath = "/a.gif"; full.soundPath = "/s.mp3"
     let back = try! JSONDecoder().decode(Prefs.self, from: try! JSONEncoder().encode(full))
-    check(back.notifyEnabled && back.telegramBotToken == "tok" && back.telegramChatID == "42",
-          "telegram config round-trips")
+    check(back.notifyEnabled, "notify flag round-trips")
     check(back.animationPath == "/a.gif" && back.soundPath == "/s.mp3", "custom media paths round-trip")
 
     // A pre-notifications prefs.json (only the old keys) still decodes with new defaults.
@@ -144,6 +158,16 @@ func testNotifyPrefs() {
     let legacy = try! JSONDecoder().decode(Prefs.self, from: Data(old.utf8))
     check(legacy.backgroundTheme == "graphite" && legacy.soundEnabled && !legacy.notifyEnabled,
           "legacy prefs decode; new notify fields default off")
+
+    section("NotifySecrets")
+    check(NotifySecrets().isEmpty, "fresh secrets are empty")
+    var sec = NotifySecrets(); sec.telegramBotToken = "123:ABC"; sec.telegramChatID = "42"
+    check(!sec.isEmpty, "secrets with a token are non-empty")
+    let secBack = try! JSONDecoder().decode(NotifySecrets.self, from: try! JSONEncoder().encode(sec))
+    check(secBack.telegramBotToken == "123:ABC" && secBack.telegramChatID == "42", "secrets round-trip")
+    // A secrets file that predates the webhook field still decodes.
+    let partial = try! JSONDecoder().decode(NotifySecrets.self, from: Data(#"{"telegramBotToken":"t"}"#.utf8))
+    check(partial.telegramBotToken == "t" && partial.webhookURL == nil, "partial secrets decode leniently")
 }
 
 @main

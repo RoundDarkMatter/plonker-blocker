@@ -1,3 +1,6 @@
+// Plonker Blocker — Copyright 2026 RoundDarkMatter
+// SPDX-License-Identifier: Apache-2.0
+
 import AppKit
 import UniformTypeIdentifiers
 
@@ -139,7 +142,8 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         setupAppMenu()
         buildWindow()
         reload()
-        if PolicyStore.load().passcode == nil {
+        // Nudge to set a passcode — but only until the user sets one or clicks Skip.
+        if PolicyStore.load().passcode == nil, !PrefsStore.load().passcodeNudgeSkipped {
             let a = NSAlert()
             a.messageText = "Set an unlock passcode?"
             a.informativeText =
@@ -147,8 +151,9 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
               + "right on the lock screen. Without one, they fall back to the macOS admin "
               + "password dialog."
             a.addButton(withTitle: "Set Passcode…")
-            a.addButton(withTitle: "Later")
+            a.addButton(withTitle: "Skip")
             if a.runModal() == .alertFirstButtonReturn { setPasscode() }
+            else { PrefsStore.update { $0.passcodeNudgeSkipped = true } }   // don't ask again
         }
     }
 
@@ -214,13 +219,15 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         searchField.focusRingType = .none
         content.addSubview(searchField)
 
-        func topButton(_ title: String, _ x: CGFloat, _ w: CGFloat, _ sel: Selector) -> NSButton {
+        func mkButton(_ title: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat,
+                      _ sel: Selector, key: Bool = false) -> NSButton {
             let b = NSButton(title: title, target: self, action: sel)
-            b.bezelStyle = .rounded; b.frame = NSRect(x: x, y: 416, width: w, height: 30)
+            b.bezelStyle = .rounded; b.frame = NSRect(x: x, y: y, width: w, height: h)
+            if key { b.keyEquivalent = "\r" }
             return b
         }
-        content.addSubview(topButton("Schedule…", 456, 132, #selector(editSchedule)))
-        content.addSubview(topButton("Activity…", 596, 140, #selector(showLog)))
+        content.addSubview(mkButton("Schedule…", 456, 416, 132, 30, #selector(editSchedule)))
+        content.addSubview(mkButton("Activity…", 596, 416, 140, 30, #selector(showLog)))
 
         // ── Table card ────────────────────────────────────────────
         let scroll = NSScrollView(frame: NSRect(x: 28, y: 76, width: 704, height: 330))
@@ -262,14 +269,8 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         content.addSubview(emptyLabel)
 
         // ── Bottom toolbar ────────────────────────────────────────
-        func button(_ title: String, _ x: CGFloat, _ w: CGFloat, _ sel: Selector, key: Bool = false) -> NSButton {
-            let b = NSButton(title: title, target: self, action: sel)
-            b.bezelStyle = .rounded; b.frame = NSRect(x: x, y: 24, width: w, height: 32)
-            if key { b.keyEquivalent = "\r" }
-            return b
-        }
-        content.addSubview(button("Protect App…", 28, 130, #selector(protectApp), key: true))
-        content.addSubview(button("Unprotect", 166, 96, #selector(unprotectSelected)))
+        content.addSubview(mkButton("Protect App…", 28, 24, 130, 32, #selector(protectApp), key: true))
+        content.addSubview(mkButton("Unprotect", 166, 24, 96, 32, #selector(unprotectSelected)))
 
         let relockLabel = NSTextField(labelWithString: "Unlock for:")
         relockLabel.font = .systemFont(ofSize: 12); relockLabel.textColor = NSColor(white: 1, alpha: 0.6)
@@ -284,7 +285,7 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         relockPopup.target = self; relockPopup.action = #selector(relockChanged)
         content.addSubview(relockPopup)
 
-        content.addSubview(button("Quit", 650, 86, #selector(quitApp)))
+        content.addSubview(mkButton("Quit", 650, 24, 86, 32, #selector(quitApp)))
 
         window.contentView = content
         window.makeKeyAndOrderFront(nil)
@@ -299,8 +300,8 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
 
     @objc private func pickBgTheme(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
-        PrefsStore.update { $0.backgroundTheme = id; $0.backgroundImagePath = nil }
-        gradientView.apply(PrefsStore.load()); setupAppMenu()
+        gradientView.apply(PrefsStore.update { $0.backgroundTheme = id; $0.backgroundImagePath = nil })
+        setupAppMenu()
     }
 
     @objc private func pickBgImage() {
@@ -310,14 +311,14 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { [weak self] resp in
             guard let self, resp == .OK, let url = panel.url else { return }
-            PrefsStore.update { $0.backgroundImagePath = url.path }
-            self.gradientView.apply(PrefsStore.load()); self.setupAppMenu()
+            self.gradientView.apply(PrefsStore.update { $0.backgroundImagePath = url.path })
+            self.setupAppMenu()
         }
     }
 
     @objc private func resetBackground() {
-        PrefsStore.update { $0.backgroundTheme = nil; $0.backgroundImagePath = nil }
-        gradientView.apply(PrefsStore.load()); setupAppMenu()
+        gradientView.apply(PrefsStore.update { $0.backgroundTheme = nil; $0.backgroundImagePath = nil })
+        setupAppMenu()
     }
 
     @objc private func toggleAhahah() {
@@ -505,33 +506,24 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         alert.window.initialFirstResponder = new
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         guard !new.stringValue.isEmpty else {
-            presentError(AppError.installFailed("passcode can't be empty")); return
+            infoAlert("Passcode can't be empty"); return
         }
         guard new.stringValue == confirm.stringValue else {
-            let a = NSAlert(); a.messageText = "Passcodes don't match"
-            a.addButton(withTitle: "OK"); a.runModal(); return
+            infoAlert("Passcodes don't match"); return
         }
         guard let rec = Passcode.makeRecord(new.stringValue) else {
-            let a = NSAlert(); a.messageText = "Passcode too short"
-            a.informativeText = "Use at least \(Passcode.minLength) characters."
-            a.addButton(withTitle: "OK"); a.runModal(); return
+            infoAlert("Passcode too short", "Use at least \(Passcode.minLength) characters."); return
         }
         do { try PolicyStore.setPasscode(rec) } catch { presentError(error); return }
-        let ok = NSAlert(); ok.messageText = "Unlock passcode set."
-        ok.informativeText = "Protected apps now unlock with this passcode or Touch ID."
-        ok.addButton(withTitle: "OK"); ok.runModal()
+        infoAlert("Unlock passcode set.", "Protected apps now unlock with this passcode or Touch ID.")
         setupAppMenu()   // reflect Change/Remove state
     }
 
     @objc private func removePasscode() {
-        let a = NSAlert()
-        a.messageText = "Remove unlock passcode?"
-        a.informativeText =
-            "The passcode is optional. Without it, protected apps fall back to the "
-          + "macOS administrator password dialog (Touch ID still works)."
-        a.addButton(withTitle: "Remove")
-        a.addButton(withTitle: "Cancel")
-        guard a.runModal() == .alertFirstButtonReturn else { return }
+        guard confirm("Remove unlock passcode?",
+                      "The passcode is optional. Without it, protected apps fall back to the "
+                    + "macOS administrator password dialog (Touch ID still works).",
+                      okTitle: "Remove") else { return }
         do { try PolicyStore.setPasscode(nil) } catch { presentError(error); return }
         setupAppMenu()
     }
@@ -555,17 +547,22 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
     @objc private func toggleProtection() {
         if GuardAgent.isEnabled() {
             GuardAgent.disable()
-        } else {
-            do { try GuardAgent.enable() }
-            catch { presentError(error) }
-            if PolicyStore.load().apps.isEmpty {
-                let a = NSAlert()
-                a.messageText = "Protection is on, but no apps are locked yet"
-                a.informativeText = "Click “Protect App…” to choose which apps require admin approval."
-                a.addButton(withTitle: "OK"); a.runModal()
-            }
+            reload()
+            return
+        }
+        do { try GuardAgent.enable() }
+        catch { presentError(error); reload(); return }   // don't claim "on" if it failed
+        if PolicyStore.load().apps.isEmpty {
+            infoAlert("Protection is on, but no apps are locked yet",
+                      "Click “Protect App…” to choose which apps require admin approval.")
         }
         reload()
+        // launchd spawns the guard asynchronously after bootstrap returns, so an
+        // immediate isRunning() probe can read "stopped". Re-check shortly to avoid
+        // a spurious orange pill (and to reflect a genuinely failed launch).
+        if GuardAgent.isEnabled(), !GuardAgent.isRunning() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.reload() }
+        }
     }
 
     // Currently running, user-facing apps the user can pick from directly,
@@ -646,6 +643,18 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         a.addButton(withTitle: "OK"); a.runModal()
     }
 
+    // Small shared alert helpers (the multi-button/accessory alerts stay bespoke).
+    private func infoAlert(_ message: String, _ info: String? = nil) {
+        let a = NSAlert(); a.messageText = message
+        if let info { a.informativeText = info }
+        a.addButton(withTitle: "OK"); a.runModal()
+    }
+    private func confirm(_ message: String, _ info: String, okTitle: String) -> Bool {
+        let a = NSAlert(); a.messageText = message; a.informativeText = info
+        a.addButton(withTitle: okTitle); a.addButton(withTitle: "Cancel")
+        return a.runModal() == .alertFirstButtonReturn
+    }
+
     // MARK: Table (data + drag-to-reorder)
 
     func controlTextDidChange(_ obj: Notification) {
@@ -690,13 +699,14 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
 
     func tableView(_ tv: NSTableView, validateDrop info: NSDraggingInfo,
                    proposedRow row: Int, proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
-        guard canReorder, op == .above else { return [] }
+        guard canReorder, op == .above,
+              (info.draggingSource as? NSTableView) === tableView else { return [] }
         return .move
     }
 
     func tableView(_ tv: NSTableView, acceptDrop info: NSDraggingInfo,
                    row: Int, dropOperation op: NSTableView.DropOperation) -> Bool {
-        guard canReorder,
+        guard canReorder, (info.draggingSource as? NSTableView) === tableView,
               let str = info.draggingPasteboard.pasteboardItems?.first?.string(forType: .string),
               let src = Int(str), src >= 0, src < apps.count else { return false }
         var newApps = apps
@@ -706,8 +716,8 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate,
         dest = max(0, min(dest, newApps.count))
         newApps.insert(moved, at: dest)
         apps = newApps
-        PolicyStore.reorder(newApps)
-        applyFilter()
+        do { try PolicyStore.reorder(newApps); applyFilter() }
+        catch { presentError(error); reload() }   // reconcile UI with the on-disk order
         return true
     }
 
@@ -746,12 +756,23 @@ final class AboutPanel: NSObject {
         let build = info["CFBundleVersion"] as? String ?? version
         label("Version \(version) (\(build))", .systemFont(ofSize: 12), .secondaryLabelColor, 146, 16)
 
-        label("Locks apps behind a passcode, Touch ID, or an admin password.",
-              .systemFont(ofSize: 11), .secondaryLabelColor, 112, 28)
+        let tagline = NSTextField(wrappingLabelWithString:
+            "Locks apps behind a passcode, Touch ID, or an admin password.")
+        tagline.font = .systemFont(ofSize: 11); tagline.textColor = .secondaryLabelColor
+        tagline.alignment = .center; tagline.isBezeled = false; tagline.drawsBackground = false
+        tagline.isSelectable = false; tagline.maximumNumberOfLines = 2
+        tagline.frame = NSRect(x: 20, y: 108, width: 300, height: 30)
+        c.addSubview(tagline)
 
+        // Copyright + license, read from the bundle (falls back to the same text).
         let copyright = info["NSHumanReadableCopyright"] as? String
-            ?? "© 2026 Plonker Blocker. All rights reserved."
-        label(copyright, .systemFont(ofSize: 11), .tertiaryLabelColor, 84, 16)
+            ?? "Copyright © 2026 RoundDarkMatter. Licensed under the Apache License 2.0."
+        let cr = NSTextField(wrappingLabelWithString: copyright)
+        cr.font = .systemFont(ofSize: 11); cr.textColor = .tertiaryLabelColor
+        cr.alignment = .center; cr.isBezeled = false; cr.drawsBackground = false
+        cr.isSelectable = false; cr.maximumNumberOfLines = 2
+        cr.frame = NSRect(x: 20, y: 62, width: 300, height: 34)
+        c.addSubview(cr)
 
         let close = NSButton(title: "OK", target: self, action: #selector(closeTapped))
         close.bezelStyle = .rounded; close.keyEquivalent = "\r"
@@ -795,6 +816,7 @@ final class NotificationsEditor: NSObject {
         super.init()
 
         let p = PrefsStore.load()
+        let sec = SecretStore.load()
         let c = panel.contentView!
 
         func title(_ s: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, bold: Bool = false) {
@@ -816,11 +838,11 @@ final class NotificationsEditor: NSObject {
         c.addSubview(enableCheck)
 
         title("Telegram bot token", 24, 374, 300)
-        field(tokenField, 350, "123456:ABC-DEF… (from @BotFather)", p.telegramBotToken)
+        field(tokenField, 350, "123456:ABC-DEF… (from @BotFather)", sec.telegramBotToken)
         title("Telegram chat ID", 24, 322, 300)
-        field(chatField, 298, "e.g. 987654321 (from @userinfobot)", p.telegramChatID)
+        field(chatField, 298, "e.g. 987654321 (from @userinfobot)", sec.telegramChatID)
         title("Webhook URL (optional)", 24, 270, 300)
-        field(webhookField, 246, "https://… receives a JSON POST", p.webhookURL)
+        field(webhookField, 246, "https://… receives a JSON POST", sec.webhookURL)
 
         title("Send an alert when:", 24, 216, 300)
         cbLocked.frame = NSRect(x: 24, y: 190, width: 220, height: 20); cbLocked.state = p.notifyOnLocked ? .on : .off
@@ -836,8 +858,9 @@ final class NotificationsEditor: NSObject {
         statusLabel.maximumNumberOfLines = 3; statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.frame = NSRect(x: 156, y: 98, width: 300, height: 44); c.addSubview(statusLabel)
 
-        title("The bot token is stored on this Mac only. Alerts are sent directly to "
-            + "Telegram / your webhook — nowhere else.", 24, 56, 432)
+        title("The bot token is stored in an owner-only file on this Mac (not in the "
+            + "shared prefs). Alerts go directly to Telegram / your webhook, nowhere else.",
+              24, 52, 440)
 
         let save = NSButton(title: "Save", target: self, action: #selector(saveTapped))
         save.bezelStyle = .rounded; save.keyEquivalent = "\r"
@@ -853,20 +876,19 @@ final class NotificationsEditor: NSObject {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines); return t.isEmpty ? nil : t
     }
 
-    // Build a Prefs carrying just the notification fields for a test send.
-    private func draftPrefs() -> Prefs {
-        var p = PrefsStore.load()
-        p.notifyEnabled = true
-        p.telegramBotToken = nilIfEmpty(tokenField.stringValue)
-        p.telegramChatID = nilIfEmpty(chatField.stringValue)
-        p.webhookURL = nilIfEmpty(webhookField.stringValue)
-        return p
+    // Build the destination secrets from the current (unsaved) field values.
+    private func draftSecrets() -> NotifySecrets {
+        var s = NotifySecrets()
+        s.telegramBotToken = nilIfEmpty(tokenField.stringValue)
+        s.telegramChatID = nilIfEmpty(chatField.stringValue)
+        s.webhookURL = nilIfEmpty(webhookField.stringValue)
+        return s
     }
 
     @objc private func testTapped() {
         statusLabel.textColor = NSColor(white: 1, alpha: 0.6)
         statusLabel.stringValue = "Sending test…"
-        RemoteNotify.test(draftPrefs()) { [weak self] ok, msg in
+        RemoteNotify.test(draftSecrets()) { [weak self] ok, msg in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.statusLabel.textColor = ok ? .systemGreen : .systemRed
@@ -876,16 +898,15 @@ final class NotificationsEditor: NSObject {
     }
 
     @objc private func saveTapped() {
+        // Flags → prefs; credentials → the owner-only secrets file.
         PrefsStore.update { p in
             p.notifyEnabled = enableCheck.state == .on
-            p.telegramBotToken = nilIfEmpty(tokenField.stringValue)
-            p.telegramChatID = nilIfEmpty(chatField.stringValue)
-            p.webhookURL = nilIfEmpty(webhookField.stringValue)
             p.notifyOnLocked = cbLocked.state == .on
             p.notifyOnUnlocked = cbUnlocked.state == .on
             p.notifyOnFailed = cbFailed.state == .on
             p.notifyOnProtectionOff = cbProtOff.state == .on
         }
+        SecretStore.save(draftSecrets())
         NSApp.stopModal()
     }
 
@@ -998,9 +1019,17 @@ final class ScheduleEditor: NSObject {
         if enabledCheck.state != .on {
             result = .always
         } else {
+            let start = minutes(from: startPicker), end = minutes(from: endPicker)
+            guard start != end else {
+                let a = NSAlert()
+                a.messageText = "Start and end times can't be the same"
+                a.informativeText = "A zero-length window would never lock anything. "
+                    + "Pick different “from” and “to” times (or turn the schedule off to lock 24/7)."
+                a.addButton(withTitle: "OK"); a.runModal()
+                return   // keep the editor open
+            }
             let days = (0..<7).compactMap { dayChecks[$0].state == .on ? $0 + 1 : nil }
-            let window = ScheduleWindow(days: days.isEmpty ? Array(1...7) : days,
-                                        start: minutes(from: startPicker), end: minutes(from: endPicker))
+            let window = ScheduleWindow(days: days.isEmpty ? Array(1...7) : days, start: start, end: end)
             result = Schedule(enabled: true, windows: [window])
         }
         NSApp.stopModal()
@@ -1015,6 +1044,7 @@ final class LogViewer: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private let panel: NSWindow
     private let table = NSTableView()
     private var rows: [Attempt] = AttemptLog.recent()
+    private var emptyLabel: NSTextField!
 
     private static let display: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "MMM d  HH:mm:ss"; return f
@@ -1046,11 +1076,11 @@ final class LogViewer: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         scroll.documentView = table
         c.addSubview(scroll)
 
-        if rows.isEmpty {
-            let empty = NSTextField(labelWithString: "No unlock attempts recorded yet.")
-            empty.textColor = NSColor(white: 1, alpha: 0.5); empty.alignment = .center
-            empty.frame = NSRect(x: 16, y: 230, width: 608, height: 20); c.addSubview(empty)
-        }
+        let empty = NSTextField(labelWithString: "No unlock attempts recorded yet.")
+        empty.textColor = NSColor(white: 1, alpha: 0.5); empty.alignment = .center
+        empty.frame = NSRect(x: 16, y: 230, width: 608, height: 20)
+        empty.isHidden = !rows.isEmpty
+        c.addSubview(empty); emptyLabel = empty
 
         let clear = NSButton(title: "Clear Log", target: self, action: #selector(clearTapped))
         clear.bezelStyle = .rounded; clear.frame = NSRect(x: 16, y: 16, width: 110, height: 32)
@@ -1066,7 +1096,9 @@ final class LogViewer: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         panel.orderOut(nil)
     }
 
-    @objc private func clearTapped() { AttemptLog.clear(); rows = []; table.reloadData() }
+    @objc private func clearTapped() {
+        AttemptLog.clear(); rows = []; table.reloadData(); emptyLabel.isHidden = false
+    }
     @objc private func closeTapped() { NSApp.stopModal() }
 
     private func pretty(_ event: String) -> String {
