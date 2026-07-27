@@ -161,13 +161,3 @@ show a Gatekeeper warning until the app is Developer-ID signed and notarized.
 Licensed under the **Apache License, Version 2.0** (see `LICENSE` and `NOTICE`).
 Copyright © 2026 RoundDarkMatter. The name "Plonker Blocker" and the app/tray
 artwork are not covered by the Apache trademark grant.
-
-## Limits (honest boundary)
-
-A strong **UI deterrent**, not kernel-enforced access control. A determined user
-with a terminal could kill the guard (it relaunches, but that's a race) or drive a
-scriptable protected app out-of-band (e.g. `osascript`) without ever bringing its
-window forward. The cover only reacts to the frontmost window. The protected list
-itself is now root-owned, so it can't be edited without admin rights. Truly
-unbypassable per-app blocking needs an Apple Endpoint Security extension, Screen
-Time, or MDM.
