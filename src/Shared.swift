@@ -215,11 +215,6 @@ let iso8601 = ISO8601DateFormatter()
 
 func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-/// Alias for `run` usable inside types whose own `run` member would shadow it
-/// (e.g. `Migration.run`).
-@discardableResult
-func sh(_ path: String, _ args: [String]) -> (code: Int32, out: String) { run(path, args) }
-
 /// Run a shell script as root. If already root, runs directly; otherwise via the
 /// native admin prompt. Returns success.
 func runPrivileged(_ script: String) -> Bool {
@@ -778,10 +773,6 @@ enum Migration {
         if fm.fileExists(atPath: oldGif.path), !fm.fileExists(atPath: newGif.path) {
             try? Paths.ensureUserDir(); try? fm.copyItem(at: oldGif, to: newGif)
         }
-        // Pre-rename guard agents: boot out any old-label LaunchAgent and kill the
-        // old binary so two guards never run side-by-side after the rename.
-        let hadLegacyAgent = removeLegacyAgents()
-
         // Policy: only if there isn't one yet and legacy data exists.
         var wrotePolicy = false
         if !fm.fileExists(atPath: Paths.policy.path) {
@@ -803,35 +794,6 @@ enum Migration {
             }
         }
 
-        // If a legacy agent WAS protecting the machine, hand over seamlessly so
-        // there is no unprotected gap between the rename and the user re-enabling.
-        if hadLegacyAgent { try? GuardAgent.enable() }
         return wrotePolicy
-    }
-
-    /// Removes any pre-rename guard LaunchAgent + binary. Returns true if one existed.
-    private static func removeLegacyAgents() -> Bool {
-        let fm = FileManager.default
-        let uid = getuid()
-        var found = false
-        for oldLabel in ["com.plonkerblocker.muppetblocker.guard", "com.plonkerblocker.admingate.guard",
-                         "com.plonkerblocker.plonkerblocker.guard"] {
-            let plist = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/LaunchAgents/\(oldLabel).plist")
-            guard fm.fileExists(atPath: plist.path) else { continue }
-            found = true
-            sh("/bin/launchctl", ["bootout", "gui/\(uid)/\(oldLabel)"])
-            sh("/bin/launchctl", ["unload", plist.path])
-            try? fm.removeItem(at: plist)
-        }
-        if found {
-            for oldBinary in ["AdminGateGuard", "MuppetBlockerGuard"] {
-                sh("/usr/bin/pkill", ["-x", oldBinary])
-            }
-            let userSupportRoot = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            try? fm.removeItem(at: Paths.legacy.appendingPathComponent("AdminGateGuard.app"))
-            try? fm.removeItem(at: userSupportRoot.appendingPathComponent("MuppetBlocker/MuppetBlockerGuard.app"))
-        }
-        return found
     }
 }
