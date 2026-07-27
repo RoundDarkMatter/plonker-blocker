@@ -8,6 +8,10 @@ import AppKit
 // NSImage(contentsOf:) decodes standalone SVG files only on macOS 14+, whereas it
 // has loaded PDF as a template image since long before macOS 11 — so the custom
 // tray icon renders across the whole 11–26 range. Run:  swift tools/make_tray.swift
+//
+// Note: Quartz auto-embeds a /Producer (build machine's macOS version) and dates in
+// the PDF. The committed file has those neutralized; if you regenerate, strip them
+// again (they're environment metadata, not needed at runtime).
 
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "src/TrayIcon.pdf"
 let S: CGFloat = 18                       // menu-bar point size (vector — scales freely)
